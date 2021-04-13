@@ -85,7 +85,7 @@ static int cipher_init(EVP_CIPHER_CTX *ctx, const EVP_CIPHER *cipher,
 static int self_test_cipher(const ST_KAT_CIPHER *t, OSSL_SELF_TEST *st,
                             OSSL_LIB_CTX *libctx)
 {
-    int ret = 0, encrypt = 1, len, ct_len = 0, pt_len = 0;
+    int ret = 0, encrypt = 1, len = 0, ct_len = 0, pt_len = 0;
     EVP_CIPHER_CTX *ctx = NULL;
     EVP_CIPHER *cipher = NULL;
     unsigned char ct_buf[256] = { 0 };
@@ -96,39 +96,47 @@ static int self_test_cipher(const ST_KAT_CIPHER *t, OSSL_SELF_TEST *st,
     ctx = EVP_CIPHER_CTX_new();
     if (ctx == NULL)
         goto err;
-    cipher = EVP_CIPHER_fetch(libctx, t->base.algorithm, "");
+    cipher = EVP_CIPHER_fetch(libctx, t->base.algorithm, NULL);
     if (cipher == NULL)
         goto err;
 
     /* Encrypt plain text message */
-    if (!cipher_init(ctx, cipher, t, encrypt)
-            || !EVP_CipherUpdate(ctx, ct_buf, &len, t->base.pt, t->base.pt_len)
-            || !EVP_CipherFinal_ex(ctx, ct_buf + len, &ct_len))
-        goto err;
-
-    OSSL_SELF_TEST_oncorrupt_byte(st, ct_buf);
-    ct_len += len;
-    if (ct_len != (int)t->base.expected_len
-        || memcmp(t->base.expected, ct_buf, ct_len) != 0)
-        goto err;
-
-    if (t->tag != NULL) {
-        unsigned char tag[16] = { 0 };
-
-        if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, t->tag_len, tag)
-            || memcmp(tag, t->tag, t->tag_len) != 0)
+    if ((t->mode & CIPHER_MODE_ENCRYPT) != 0) {
+        if (!cipher_init(ctx, cipher, t, encrypt)
+                || !EVP_CipherUpdate(ctx, ct_buf, &len, t->base.pt,
+                                     t->base.pt_len)
+                || !EVP_CipherFinal_ex(ctx, ct_buf + len, &ct_len))
             goto err;
+
+        OSSL_SELF_TEST_oncorrupt_byte(st, ct_buf);
+        ct_len += len;
+        if (ct_len != (int)t->base.expected_len
+            || memcmp(t->base.expected, ct_buf, ct_len) != 0)
+            goto err;
+
+        if (t->tag != NULL) {
+            unsigned char tag[16] = { 0 };
+
+            if (!EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_GET_TAG, t->tag_len,
+                                     tag)
+                || memcmp(tag, t->tag, t->tag_len) != 0)
+                goto err;
+        }
     }
 
-    if (!(cipher_init(ctx, cipher, t, !encrypt)
-          && EVP_CipherUpdate(ctx, pt_buf, &len, ct_buf, ct_len)
-          && EVP_CipherFinal_ex(ctx, pt_buf + len, &pt_len)))
-        goto err;
-    pt_len += len;
-
-    if (pt_len != (int)t->base.pt_len
-            || memcmp(pt_buf, t->base.pt, pt_len) != 0)
-        goto err;
+    /* Decrypt cipher text */
+    if ((t->mode & CIPHER_MODE_DECRYPT) != 0) {
+        if (!(cipher_init(ctx, cipher, t, !encrypt)
+              && EVP_CipherUpdate(ctx, pt_buf, &len,
+                                  t->base.expected, t->base.expected_len)
+              && EVP_CipherFinal_ex(ctx, pt_buf + len, &pt_len)))
+            goto err;
+        OSSL_SELF_TEST_oncorrupt_byte(st, pt_buf);
+        pt_len += len;
+        if (pt_len != (int)t->base.pt_len
+                || memcmp(pt_buf, t->base.pt, pt_len) != 0)
+            goto err;
+    }
 
     ret = 1;
 err:
@@ -233,7 +241,7 @@ err:
     EVP_KDF_free(kdf);
     EVP_KDF_CTX_free(ctx);
     BN_CTX_free(bnctx);
-    OSSL_PARAM_BLD_free_params(params);
+    OSSL_PARAM_free(params);
     OSSL_PARAM_BLD_free(bld);
     OSSL_SELF_TEST_onend(st, ret);
     return ret;
@@ -420,8 +428,8 @@ err:
     EVP_PKEY_free(peerkey);
     EVP_PKEY_CTX_free(kactx);
     EVP_PKEY_CTX_free(dctx);
-    OSSL_PARAM_BLD_free_params(params_peer);
-    OSSL_PARAM_BLD_free_params(params);
+    OSSL_PARAM_free(params_peer);
+    OSSL_PARAM_free(params);
     OSSL_PARAM_BLD_free(bld);
     OSSL_SELF_TEST_onend(st, ret);
     return ret;
@@ -505,8 +513,8 @@ err:
     EVP_PKEY_free(pkey);
     EVP_PKEY_CTX_free(kctx);
     EVP_PKEY_CTX_free(sctx);
-    OSSL_PARAM_BLD_free_params(params);
-    OSSL_PARAM_BLD_free_params(params_sig);
+    OSSL_PARAM_free(params);
+    OSSL_PARAM_free(params_sig);
     OSSL_PARAM_BLD_free(bld);
     OSSL_SELF_TEST_onend(st, ret);
     return ret;
@@ -591,9 +599,9 @@ err:
     EVP_PKEY_free(key);
     EVP_PKEY_CTX_free(encctx);
     EVP_PKEY_CTX_free(keyctx);
-    OSSL_PARAM_BLD_free_params(keyparams);
+    OSSL_PARAM_free(keyparams);
     OSSL_PARAM_BLD_free(keybld);
-    OSSL_PARAM_BLD_free_params(initparams);
+    OSSL_PARAM_free(initparams);
     OSSL_PARAM_BLD_free(initbld);
     OSSL_SELF_TEST_onend(st, ret);
     return ret;
