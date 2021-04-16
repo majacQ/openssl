@@ -225,7 +225,9 @@ int dgst_main(int argc, char **argv)
         BIO_printf(bio_err, "%s: Can only sign or verify one file.\n", prog);
         goto end;
     }
-    app_RAND_load();
+    if (!app_RAND_load())
+        goto end;
+
     if (digestname != NULL) {
         if (!opt_md(digestname, &md))
             goto opthelp;
@@ -427,7 +429,7 @@ int dgst_main(int argc, char **argv)
         const char *sig_name = NULL;
         if (!out_bin) {
             if (sigkey != NULL)
-                sig_name = EVP_PKEY_get0_first_alg_name(sigkey);
+                sig_name = EVP_PKEY_get0_type_name(sigkey);
         }
         ret = 0;
         for (i = 0; i < argc; i++) {
