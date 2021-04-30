@@ -56,21 +56,65 @@
  * [including the GNU Public Licence.]
  */
 
+#define OPENSSL_FIPSAPI
+
 #include <stdio.h>
 #include <time.h>
 #include "cryptlib.h"
-#include "sha.h"
-#include "bn.h"
-#include "dsa.h"
-#include "rand.h"
+#ifndef OPENSSL_NO_SHA
+#include <openssl/bn.h>
+#include <openssl/dsa.h>
+#include <openssl/rand.h>
 
-int DSA_generate_key(dsa)
-DSA *dsa;
+#ifdef OPENSSL_FIPS
+
+#include <openssl/fips.h>
+#include <openssl/evp.h>
+
+static int fips_check_dsa(DSA *dsa)
+	{
+	EVP_PKEY pk;
+	unsigned char tbs[] = "DSA Pairwise Check Data";
+    	pk.type = EVP_PKEY_DSA;
+    	pk.pkey.dsa = dsa;
+
+	if (!fips_pkey_signature_test(FIPS_TEST_PAIRWISE,
+					&pk, tbs, 0, NULL, 0, NULL, 0, NULL))
+		{
+		FIPSerr(FIPS_F_FIPS_CHECK_DSA,FIPS_R_PAIRWISE_TEST_FAILED);
+		fips_set_selftest_fail();
+		return 0;
+		}
+	return 1;
+	}
+
+#endif
+
+static int dsa_builtin_keygen(DSA *dsa);
+
+int DSA_generate_key(DSA *dsa)
+	{
+	if(dsa->meth->dsa_keygen)
+		return dsa->meth->dsa_keygen(dsa);
+	return dsa_builtin_keygen(dsa);
+	}
+
+static int dsa_builtin_keygen(DSA *dsa)
 	{
 	int ok=0;
-	unsigned int i;
 	BN_CTX *ctx=NULL;
 	BIGNUM *pub_key=NULL,*priv_key=NULL;
+
+#ifdef OPENSSL_FIPS
+	if (FIPS_module_mode() && !(dsa->flags & DSA_FLAG_NON_FIPS_ALLOW)
+		&& (BN_num_bits(dsa->p) < OPENSSL_DSA_FIPS_MIN_MODULUS_BITS))
+		{
+		DSAerr(DSA_F_DSA_BUILTIN_KEYGEN, DSA_R_KEY_SIZE_TOO_SMALL);
+		goto err;
+		}
+	if (!fips_check_dsa_prng(dsa, 0, 0))
+		goto err;
+#endif
 
 	if ((ctx=BN_CTX_new()) == NULL) goto err;
 
@@ -81,14 +125,9 @@ DSA *dsa;
 	else
 		priv_key=dsa->priv_key;
 
-	i=BN_num_bits(dsa->q);
-	for (;;)
-		{
-		BN_rand(priv_key,i,1,0);
-		if (BN_cmp(priv_key,dsa->q) >= 0)
-			BN_sub(priv_key,priv_key,dsa->q);
-		if (!BN_is_zero(priv_key)) break;
-		}
+	do
+		if (!BN_rand_range(priv_key,dsa->q)) goto err;
+	while (BN_is_zero(priv_key));
 
 	if (dsa->pub_key == NULL)
 		{
@@ -96,11 +135,33 @@ DSA *dsa;
 		}
 	else
 		pub_key=dsa->pub_key;
+	
+	{
+		BIGNUM local_prk;
+		BIGNUM *prk;
 
-	if (!BN_mod_exp(pub_key,dsa->g,priv_key,dsa->p,ctx)) goto err;
+		if ((dsa->flags & DSA_FLAG_NO_EXP_CONSTTIME) == 0)
+			{
+			BN_init(&local_prk);
+			prk = &local_prk;
+			BN_with_flags(prk, priv_key, BN_FLG_CONSTTIME);
+			}
+		else
+			prk = priv_key;
+
+		if (!BN_mod_exp(pub_key,dsa->g,prk,dsa->p,ctx)) goto err;
+	}
 
 	dsa->priv_key=priv_key;
 	dsa->pub_key=pub_key;
+#ifdef OPENSSL_FIPS
+	if(!fips_check_dsa(dsa))
+		{
+		dsa->pub_key = NULL;
+		dsa->priv_key = NULL;
+	    	goto err;
+		}
+#endif
 	ok=1;
 
 err:
@@ -109,4 +170,4 @@ err:
 	if (ctx != NULL) BN_CTX_free(ctx);
 	return(ok);
 	}
-
+#endif

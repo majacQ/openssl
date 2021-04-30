@@ -59,7 +59,7 @@
 #define NO_SHUTDOWN
 
 /*-----------------------------------------
-   cntime - SSL client connection timer program
+   s_time - SSL client connection timer program
    Written and donated by Larry Streepy <streepy@healthcare.com>
   -----------------------------------------*/
 
@@ -67,73 +67,28 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef NO_STDIO
-#define APPS_WIN16
-#endif
-#include "x509.h"
-#include "ssl.h"
-#include "pem.h"
 #define USE_SOCKETS
 #include "apps.h"
+#ifdef OPENSSL_NO_STDIO
+#define APPS_WIN16
+#endif
+#include <openssl/x509.h>
+#include <openssl/ssl.h>
+#include <openssl/pem.h>
 #include "s_apps.h"
-#include "err.h"
+#include <openssl/err.h>
 #ifdef WIN32_STUFF
 #include "winmain.h"
 #include "wintext.h"
 #endif
-
-#ifndef MSDOS
-#define TIMES
-#endif
-
-#ifndef VMS
-#ifndef _IRIX
-#include <time.h>
-#endif
-#ifdef TIMES
-#include <sys/types.h>
-#include <sys/times.h>
-#endif
-#else /* VMS */
-#include <types.h>
-struct tms {
-	time_t tms_utime;
-	time_t tms_stime;
-	time_t tms_uchild;	/* I dunno...  */
-	time_t tms_uchildsys;	/* so these names are a guess :-) */
-	}
-#endif
-#ifndef TIMES
-#include <sys/timeb.h>
-#endif
-
-#ifdef _AIX
-#include <sys/select.h>
-#endif
-
-#if defined(sun) || defined(__ultrix)
-#define _POSIX_SOURCE
-#include <limits.h>
-#include <sys/param.h>
-#endif
-
-/* The following if from times(3) man page.  It may need to be changed
-*/
-#ifndef HZ
-#ifndef CLK_TCK
-#ifndef VMS
-#define HZ      100.0
-#else /* VMS */
-#define HZ      100.0
-#endif
-#else /* CLK_TCK */
-#define HZ ((double)CLK_TCK)
-#endif
+#if !defined(OPENSSL_SYS_MSDOS)
+#include OPENSSL_UNISTD
 #endif
 
 #undef PROG
 #define PROG s_time_main
 
+#undef ioctl
 #define ioctl ioctlsocket
 
 #define SSL_CONNECT_NAME	"localhost:4433"
@@ -143,6 +98,10 @@ struct tms {
 #undef BUFSIZZ
 #define BUFSIZZ 1024*10
 
+#define MYBUFSIZ 1024*8
+
+#undef min
+#undef max
 #define min(a,b) (((a) < (b)) ? (a) : (b))
 #define max(a,b) (((a) > (b)) ? (a) : (b))
 
@@ -151,18 +110,10 @@ struct tms {
 extern int verify_depth;
 extern int verify_error;
 
-#ifndef NOPROTO
 static void s_time_usage(void);
 static int parseArgs( int argc, char **argv );
 static SSL *doConnection( SSL *scon );
 static void s_time_init(void);
-#else
-static void s_time_usage();
-static int parseArgs();
-static SSL *doConnection();
-static void s_time_init();
-#endif
-
 
 /***********************************************************************
  * Static data declarations
@@ -178,7 +129,7 @@ static char *tm_cipher=NULL;
 static int tm_verify = SSL_VERIFY_NONE;
 static int maxTime = SECONDS;
 static SSL_CTX *tm_ctx=NULL;
-static SSL_METHOD *s_time_meth=NULL;
+static const SSL_METHOD *s_time_meth=NULL;
 static char *s_www_path=NULL;
 static long bytes_read=0; 
 static int st_bugs=0;
@@ -186,11 +137,11 @@ static int perform=0;
 #ifdef FIONBIO
 static int t_nbio=0;
 #endif
-#ifdef WIN32
+#ifdef OPENSSL_SYS_WIN32
 static int exitNow = 0;		/* Set when it's time to exit main */
 #endif
 
-static void s_time_init()
+static void s_time_init(void)
 	{
 	host=SSL_CONNECT_NAME;
 	t_cert_file=NULL;
@@ -210,7 +161,7 @@ static void s_time_init()
 #ifdef FIONBIO
 	t_nbio=0;
 #endif
-#ifdef WIN32
+#ifdef OPENSSL_SYS_WIN32
 	exitNow = 0;		/* Set when it's time to exit main */
 #endif
 	}
@@ -218,26 +169,26 @@ static void s_time_init()
 /***********************************************************************
  * usage - display usage message
  */
-static void s_time_usage()
+static void s_time_usage(void)
 {
 	static char umsg[] = "\
 -time arg     - max number of seconds to collect data, default %d\n\
 -verify arg   - turn on peer certificate verification, arg == depth\n\
 -cert arg     - certificate file to use, PEM format assumed\n\
--key arg      - RSA file to use, PEM format assumed, in cert file if\n\
-                not specified but cert fill is.\n\
+-key arg      - RSA file to use, PEM format assumed, key is in cert file\n\
+                file if not specified by this option\n\
 -CApath arg   - PEM format directory of CA's\n\
 -CAfile arg   - PEM format file of CA's\n\
--cipher       - prefered cipher to use, play with 'ssleay ciphers'\n\n";
+-cipher       - preferred cipher to use, play with 'openssl ciphers'\n\n";
 
-	printf( "usage: client <args>\n\n" );
+	printf( "usage: s_time <args>\n\n" );
 
 	printf("-connect host:port - host:port to connect to (default is %s)\n",SSL_CONNECT_NAME);
 #ifdef FIONBIO
 	printf("-nbio         - Run with non-blocking IO\n");
 	printf("-ssl2         - Just use SSLv2\n");
 	printf("-ssl3         - Just use SSLv3\n");
-	printf("-bugs         - Turn on SSL bug compatability\n");
+	printf("-bugs         - Turn on SSL bug compatibility\n");
 	printf("-new          - Just time new connections\n");
 	printf("-reuse        - Just time connection reuse\n");
 	printf("-www page     - Retrieve 'page' from the site\n");
@@ -250,23 +201,12 @@ static void s_time_usage()
  *
  * Returns 0 if ok, -1 on bad args
  */
-static int parseArgs(argc,argv)
-int argc;
-char **argv;
+static int parseArgs(int argc, char **argv)
 {
     int badop = 0;
 
     verify_depth=0;
     verify_error=X509_V_OK;
-#ifdef FIONBIO
-    t_nbio=0;
-#endif
-
-	apps_startup();
-	s_time_init();
-
-	if (bio_err == NULL)
-		bio_err=BIO_new_fp(stderr,BIO_NOCLOSE);
 
     argc--;
     argv++;
@@ -334,14 +274,19 @@ char **argv;
 		{
 		if (--argc < 1) goto bad;
 		s_www_path= *(++argv);
+		if(strlen(s_www_path) > MYBUFSIZ-100)
+			{
+			BIO_printf(bio_err,"-www option too long\n");
+			badop=1;
+			}
 		}
 	else if(strcmp(*argv,"-bugs") == 0)
 	    st_bugs=1;
-#ifndef NO_SSL2
+#ifndef OPENSSL_NO_SSL2
 	else if(strcmp(*argv,"-ssl2") == 0)
 	    s_time_meth=SSLv2_client_method();
 #endif
-#ifndef NO_SSL3
+#ifndef OPENSSL_NO_SSL3
 	else if(strcmp(*argv,"-ssl3") == 0)
 	    s_time_meth=SSLv3_client_method();
 #endif
@@ -377,45 +322,18 @@ bad:
 #define START	0
 #define STOP	1
 
-static double tm_Time_F(s)
-int s;
+static double tm_Time_F(int s)
 	{
-	static double ret;
-#ifdef TIMES
-	static struct tms tstart,tend;
-
-	if(s == START) {
-		times(&tstart);
-		return(0);
-	} else {
-		times(&tend);
-		ret=((double)(tend.tms_utime-tstart.tms_utime))/HZ;
-		return((ret == 0.0)?1e-6:ret);
+	return app_tminterval(s,1);
 	}
-#else /* !times() */
-	static struct timeb tstart,tend;
-	long i;
-
-	if(s == START) {
-		ftime(&tstart);
-		return(0);
-	} else {
-		ftime(&tend);
-		i=(long)tend.millitm-(long)tstart.millitm;
-		ret=((double)(tend.time-tstart.time))+((double)i)/1000.0;
-		return((ret == 0.0)?1e-6:ret);
-	}
-#endif
-}
 
 /***********************************************************************
  * MAIN - main processing area for client
  *			real name depends on MONOLITH
  */
-int
-MAIN(argc,argv)
-int argc;
-char **argv;
+int MAIN(int, char **);
+
+int MAIN(int argc, char **argv)
 	{
 	double totalTime = 0.0;
 	int nConn = 0;
@@ -425,11 +343,17 @@ char **argv;
 	MS_STATIC char buf[1024*8];
 	int ver;
 
-#if !defined(NO_SSL2) && !defined(NO_SSL3)
+	apps_startup();
+	s_time_init();
+
+	if (bio_err == NULL)
+		bio_err=BIO_new_fp(stderr,BIO_NOCLOSE);
+
+#if !defined(OPENSSL_NO_SSL2) && !defined(OPENSSL_NO_SSL3)
 	s_time_meth=SSLv23_client_method();
-#elif !defined(NO_SSL3)
+#elif !defined(OPENSSL_NO_SSL3)
 	s_time_meth=SSLv3_client_method();
-#elif !defined(NO_SSL2)
+#elif !defined(OPENSSL_NO_SSL2)
 	s_time_meth=SSLv2_client_method();
 #endif
 
@@ -437,7 +361,7 @@ char **argv;
 	if( parseArgs( argc, argv ) < 0 )
 		goto end;
 
-	SSLeay_add_ssl_algorithms();
+	OpenSSL_add_ssl_algorithms();
 	if ((tm_ctx=SSL_CTX_new(s_time_meth)) == NULL) return(1);
 
 	SSL_CTX_set_quiet_shutdown(tm_ctx,1);
@@ -452,7 +376,7 @@ char **argv;
 	if ((!SSL_CTX_load_verify_locations(tm_ctx,CAfile,CApath)) ||
 		(!SSL_CTX_set_default_verify_paths(tm_ctx)))
 		{
-		/* BIO_printf(bio_err,"error seting default verify locations\n"); */
+		/* BIO_printf(bio_err,"error setting default verify locations\n"); */
 		ERR_print_errors(bio_err);
 		/* goto end; */
 		}
@@ -462,7 +386,6 @@ char **argv;
 
 	if (tm_cipher == NULL ) {
 		fprintf( stderr, "No CIPHER specified\n" );
-/*		EXIT(1); */
 	}
 
 	if (!(perform & 1)) goto next;
@@ -475,7 +398,7 @@ char **argv;
 	tm_Time_F(START);
 	for (;;)
 		{
-		if (finishtime < time(NULL)) break;
+		if (finishtime < (long)time(NULL)) break;
 #ifdef WIN32_STUFF
 
 		if( flushWinMsgs(0) == -1 )
@@ -490,7 +413,7 @@ char **argv;
 
 		if (s_www_path != NULL)
 			{
-			sprintf(buf,"GET %s HTTP/1.0\r\n\r\n",s_www_path);
+			BIO_snprintf(buf,sizeof buf,"GET %s HTTP/1.0\r\n\r\n",s_www_path);
 			SSL_write(scon,buf,strlen(buf));
 			while ((i=SSL_read(scon,buf,sizeof(buf))) > 0)
 				bytes_read+=i;
@@ -526,9 +449,9 @@ char **argv;
 		}
 	totalTime += tm_Time_F(STOP); /* Add the time for this iteration */
 
-	i=(int)(time(NULL)-finishtime+maxTime);
+	i=(int)((long)time(NULL)-finishtime+maxTime);
 	printf( "\n\n%d connections in %.2fs; %.2f connections/user sec, bytes read %ld\n", nConn, totalTime, ((double)nConn/totalTime),bytes_read);
-	printf( "%d connections in %ld real seconds, %ld bytes read per connection\n",nConn,time(NULL)-finishtime+maxTime,bytes_read/nConn);
+	printf( "%d connections in %ld real seconds, %ld bytes read per connection\n",nConn,(long)time(NULL)-finishtime+maxTime,bytes_read/nConn);
 
 	/* Now loop and time connections using the same session id over and over */
 
@@ -545,7 +468,7 @@ next:
 
 	if (s_www_path != NULL)
 		{
-		sprintf(buf,"GET %s HTTP/1.0\r\n\r\n",s_www_path);
+		BIO_snprintf(buf,sizeof buf,"GET %s HTTP/1.0\r\n\r\n",s_www_path);
 		SSL_write(scon,buf,strlen(buf));
 		while (SSL_read(scon,buf,sizeof(buf)) > 0)
 			;
@@ -560,7 +483,7 @@ next:
 	nConn = 0;
 	totalTime = 0.0;
 
-	finishtime=time(NULL)+maxTime;
+	finishtime=(long)time(NULL)+maxTime;
 
 	printf( "starting\n" );
 	bytes_read=0;
@@ -568,7 +491,7 @@ next:
 		
 	for (;;)
 		{
-		if (finishtime < time(NULL)) break;
+		if (finishtime < (long)time(NULL)) break;
 
 #ifdef WIN32_STUFF
 		if( flushWinMsgs(0) == -1 )
@@ -583,7 +506,7 @@ next:
 
 		if (s_www_path)
 			{
-			sprintf(buf,"GET %s HTTP/1.0\r\n\r\n",s_www_path);
+			BIO_snprintf(buf,sizeof buf,"GET %s HTTP/1.0\r\n\r\n",s_www_path);
 			SSL_write(scon,buf,strlen(buf));
 			while ((i=SSL_read(scon,buf,sizeof(buf))) > 0)
 				bytes_read+=i;
@@ -618,7 +541,7 @@ next:
 
 
 	printf( "\n\n%d connections in %.2fs; %.2f connections/user sec, bytes read %ld\n", nConn, totalTime, ((double)nConn/totalTime),bytes_read);
-	printf( "%d connections in %ld real seconds, %ld bytes read per connection\n",nConn,time(NULL)-finishtime+maxTime,bytes_read/nConn);
+	printf( "%d connections in %ld real seconds, %ld bytes read per connection\n",nConn,(long)time(NULL)-finishtime+maxTime,bytes_read/nConn);
 
 	ret=0;
 end:
@@ -629,7 +552,8 @@ end:
 		SSL_CTX_free(tm_ctx);
 		tm_ctx=NULL;
 		}
-	EXIT(ret);
+	apps_shutdown();
+	OPENSSL_EXIT(ret);
 	}
 
 /***********************************************************************
@@ -639,9 +563,7 @@ end:
  * Returns:
  *		SSL *	= the connection pointer.
  */
-static SSL *
-doConnection(scon)
-SSL *scon;
+static SSL *doConnection(SSL *scon)
 	{
 	BIO *conn;
 	SSL *serverCon;
@@ -655,7 +577,7 @@ SSL *scon;
 	BIO_set_conn_hostname(conn,host);
 
 	if (scon == NULL)
-		serverCon=(SSL *)SSL_new(tm_ctx);
+		serverCon=SSL_new(tm_ctx);
 	else
 		{
 		serverCon=scon;
@@ -679,8 +601,14 @@ SSL *scon;
 			i=SSL_get_fd(serverCon);
 			width=i+1;
 			FD_ZERO(&readfds);
-			FD_SET(i,&readfds);
-			select(width,&readfds,NULL,NULL,NULL);
+			openssl_fdset(i,&readfds);
+			/* Note: under VMS with SOCKETSHR the 2nd parameter
+			 * is currently of type (int *) whereas under other
+			 * systems it is (void *) if you don't have a cast it
+			 * will choke the compiler: if you do have a cast then
+			 * you can either go for (int *) or (void *).
+			 */
+			select(width,(void *)&readfds,NULL,NULL,NULL);
 			continue;
 			}
 		break;
