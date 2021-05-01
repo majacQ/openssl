@@ -95,7 +95,8 @@ WORK_STATE ossl_statem_server_post_process_message(SSL *s, WORK_STATE wst);
 /* Functions for getting new message data */
 __owur int tls_get_message_header(SSL *s, int *mt);
 __owur int tls_get_message_body(SSL *s, size_t *len);
-__owur int dtls_get_message(SSL *s, int *mt, size_t *len);
+__owur int dtls_get_message(SSL *s, int *mt);
+__owur int dtls_get_message_body(SSL *s, size_t *len);
 
 /* Message construction and processing functions */
 __owur int tls_process_initial_server_flight(SSL *s);
@@ -159,8 +160,8 @@ MSG_PROCESS_RETURN tls_process_end_of_early_data(SSL *s, PACKET *pkt);
 
 #ifndef OPENSSL_NO_GOST
 /* These functions are used in GOST18 CKE, both for client and server */
-int gost18_cke_cipher_nid(const SSL *s);
-int gost_ukm(const SSL *s, unsigned char *dgst_buf);
+int ossl_gost18_cke_cipher_nid(const SSL *s);
+int ossl_gost_ukm(const SSL *s, unsigned char *dgst_buf);
 #endif
 
 /* Extension processing */

@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2021 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -23,13 +23,13 @@
 #include "crypto/evp.h"
 #include "internal/asn1.h"
 
-EVP_PKEY *d2i_PrivateKey_ex(int keytype, EVP_PKEY **a, const unsigned char **pp,
-                            long length, OSSL_LIB_CTX *libctx,
-                            const char *propq)
+static EVP_PKEY *
+d2i_PrivateKey_decoder(int keytype, EVP_PKEY **a, const unsigned char **pp,
+                       long length, OSSL_LIB_CTX *libctx, const char *propq)
 {
     OSSL_DECODER_CTX *dctx = NULL;
     size_t len = length;
-    EVP_PKEY *pkey = NULL;
+    EVP_PKEY *pkey = NULL, *bak_a = NULL;
     EVP_PKEY **ppkey = &pkey;
     const char *key_name = NULL;
     const char *input_structures[] = { "type-specific", "pkcs8", NULL };
@@ -40,22 +40,30 @@ EVP_PKEY *d2i_PrivateKey_ex(int keytype, EVP_PKEY **a, const unsigned char **pp,
         if (key_name == NULL)
             return NULL;
     }
-    if (a != NULL && *a != NULL)
-        ppkey = a;
 
     for (i = 0;  i < (int)OSSL_NELEM(input_structures); ++i) {
+        const unsigned char *p = *pp;
+
+        if (a != NULL && (bak_a = *a) != NULL)
+            ppkey = a;
         dctx = OSSL_DECODER_CTX_new_for_pkey(ppkey, "DER",
                                              input_structures[i], key_name,
                                              EVP_PKEY_KEYPAIR, libctx, propq);
+        if (a != NULL)
+            *a = bak_a;
         if (dctx == NULL)
-            return NULL;
+            continue;
 
         ret = OSSL_DECODER_from_data(dctx, pp, &len);
         OSSL_DECODER_CTX_free(dctx);
         if (ret) {
             if (*ppkey != NULL
-                && evp_keymgmt_util_has(*ppkey, OSSL_KEYMGMT_SELECT_PRIVATE_KEY))
+                && evp_keymgmt_util_has(*ppkey, OSSL_KEYMGMT_SELECT_PRIVATE_KEY)) {
+                if (a != NULL)
+                    *a = *ppkey;
                 return *ppkey;
+            }
+            *pp = p;
             goto err;
         }
     }
@@ -66,14 +74,14 @@ err:
     return NULL;
 }
 
-EVP_PKEY *evp_privatekey_from_binary(int keytype, EVP_PKEY **a,
-                                     const unsigned char **pp, long length,
-                                     OSSL_LIB_CTX *libctx, const char *propq)
+static EVP_PKEY *
+d2i_PrivateKey_legacy(int keytype, EVP_PKEY **a, const unsigned char **pp,
+                      long length, OSSL_LIB_CTX *libctx, const char *propq)
 {
     EVP_PKEY *ret;
     const unsigned char *p = *pp;
 
-    if ((a == NULL) || (*a == NULL)) {
+    if (a == NULL || *a == NULL) {
         if ((ret = EVP_PKEY_new()) == NULL) {
             ERR_raise(ERR_LIB_ASN1, ERR_R_EVP_LIB);
             return NULL;
@@ -103,7 +111,7 @@ EVP_PKEY *evp_privatekey_from_binary(int keytype, EVP_PKEY **a,
                 ERR_clear_last_mark();
                 goto err;
             }
-            tmp = EVP_PKCS82PKEY_ex(p8, libctx, propq);
+            tmp = evp_pkcs82pkey_legacy(p8, libctx, propq);
             PKCS8_PRIV_KEY_INFO_free(p8);
             if (tmp == NULL) {
                 ERR_clear_last_mark();
@@ -124,7 +132,7 @@ EVP_PKEY *evp_privatekey_from_binary(int keytype, EVP_PKEY **a,
     }
     *pp = p;
     if (a != NULL)
-        (*a) = ret;
+        *a = ret;
     return ret;
  err:
     if (a == NULL || *a != ret)
@@ -132,10 +140,75 @@ EVP_PKEY *evp_privatekey_from_binary(int keytype, EVP_PKEY **a,
     return NULL;
 }
 
+EVP_PKEY *d2i_PrivateKey_ex(int keytype, EVP_PKEY **a, const unsigned char **pp,
+                            long length, OSSL_LIB_CTX *libctx,
+                            const char *propq)
+{
+    EVP_PKEY *ret;
+
+    ret = d2i_PrivateKey_decoder(keytype, a, pp, length, libctx, propq);
+    /* try the legacy path if the decoder failed */
+    if (ret == NULL)
+        ret = d2i_PrivateKey_legacy(keytype, a, pp, length, libctx, propq);
+    return ret;
+}
+
 EVP_PKEY *d2i_PrivateKey(int type, EVP_PKEY **a, const unsigned char **pp,
                          long length)
 {
     return d2i_PrivateKey_ex(type, a, pp, length, NULL, NULL);
+}
+
+static EVP_PKEY *d2i_AutoPrivateKey_legacy(EVP_PKEY **a,
+                                           const unsigned char **pp,
+                                           long length,
+                                           OSSL_LIB_CTX *libctx,
+                                           const char *propq)
+{
+    STACK_OF(ASN1_TYPE) *inkey;
+    const unsigned char *p;
+    int keytype;
+
+    p = *pp;
+    /*
+     * Dirty trick: read in the ASN1 data into a STACK_OF(ASN1_TYPE): by
+     * analyzing it we can determine the passed structure: this assumes the
+     * input is surrounded by an ASN1 SEQUENCE.
+     */
+    inkey = d2i_ASN1_SEQUENCE_ANY(NULL, &p, length);
+    p = *pp;
+    /*
+     * Since we only need to discern "traditional format" RSA and DSA keys we
+     * can just count the elements.
+     */
+    if (sk_ASN1_TYPE_num(inkey) == 6) {
+        keytype = EVP_PKEY_DSA;
+    } else if (sk_ASN1_TYPE_num(inkey) == 4) {
+        keytype = EVP_PKEY_EC;
+    } else if (sk_ASN1_TYPE_num(inkey) == 3) { /* This seems to be PKCS8, not
+                                              * traditional format */
+        PKCS8_PRIV_KEY_INFO *p8 = d2i_PKCS8_PRIV_KEY_INFO(NULL, &p, length);
+        EVP_PKEY *ret;
+
+        sk_ASN1_TYPE_pop_free(inkey, ASN1_TYPE_free);
+        if (p8 == NULL) {
+            ERR_raise(ERR_LIB_ASN1, ASN1_R_UNSUPPORTED_PUBLIC_KEY_TYPE);
+            return NULL;
+        }
+        ret = evp_pkcs82pkey_legacy(p8, libctx, propq);
+        PKCS8_PRIV_KEY_INFO_free(p8);
+        if (ret == NULL)
+            return NULL;
+        *pp = p;
+        if (a != NULL) {
+            *a = ret;
+        }
+        return ret;
+    } else {
+        keytype = EVP_PKEY_RSA;
+    }
+    sk_ASN1_TYPE_pop_free(inkey, ASN1_TYPE_free);
+    return d2i_PrivateKey_legacy(keytype, a, pp, length, libctx, propq);
 }
 
 /*
@@ -146,7 +219,13 @@ EVP_PKEY *d2i_AutoPrivateKey_ex(EVP_PKEY **a, const unsigned char **pp,
                                 long length, OSSL_LIB_CTX *libctx,
                                 const char *propq)
 {
-    return d2i_PrivateKey_ex(EVP_PKEY_NONE, a, pp, length, libctx, propq);
+    EVP_PKEY *ret;
+
+    ret = d2i_PrivateKey_decoder(EVP_PKEY_NONE, a, pp, length, libctx, propq);
+    /* try the legacy path if the decoder failed */
+    if (ret == NULL)
+        ret = d2i_AutoPrivateKey_legacy(a, pp, length, libctx, propq);
+    return ret;
 }
 
 EVP_PKEY *d2i_AutoPrivateKey(EVP_PKEY **a, const unsigned char **pp,

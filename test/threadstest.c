@@ -7,6 +7,9 @@
  * https://www.openssl.org/source/license.html
  */
 
+/* test_multi below tests the thread safety of a deprecated function */
+#define OPENSSL_SUPPRESS_DEPRECATED
+
 #if defined(_WIN32)
 # include <windows.h>
 #endif
@@ -90,14 +93,14 @@ static int wait_for_thread(thread_t thread)
 static int test_lock(void)
 {
     CRYPTO_RWLOCK *lock = CRYPTO_THREAD_lock_new();
+    int res;
 
-    if (!TEST_true(CRYPTO_THREAD_read_lock(lock))
-        || !TEST_true(CRYPTO_THREAD_unlock(lock)))
-        return 0;
+    res = TEST_true(CRYPTO_THREAD_read_lock(lock))
+          && TEST_true(CRYPTO_THREAD_unlock(lock));
 
     CRYPTO_THREAD_lock_free(lock);
 
-    return 1;
+    return res;
 }
 
 static CRYPTO_ONCE once_run = CRYPTO_ONCE_STATIC_INIT;
@@ -345,7 +348,7 @@ static void thread_general_worker(void)
 
 static void thread_multi_simple_fetch(void)
 {
-    EVP_MD *md = EVP_MD_fetch(NULL, "SHA2-256", NULL);
+    EVP_MD *md = EVP_MD_fetch(multi_libctx, "SHA2-256", NULL);
 
     if (md != NULL)
         EVP_MD_free(md);
@@ -401,22 +404,57 @@ static void thread_shared_evp_pkey(void)
         multi_success = 0;
 }
 
+static void thread_downgrade_shared_evp_pkey(void)
+{
+#ifndef OPENSSL_NO_DEPRECATED_3_0
+    /*
+     * This test is only relevant for deprecated functions that perform
+     * downgrading
+     */
+    if (EVP_PKEY_get0_RSA(shared_evp_pkey) == NULL)
+        multi_success = 0;
+#else
+    /* Shouldn't ever get here */
+    multi_success = 0;
+#endif
+}
+
+static void thread_provider_load_unload(void)
+{
+    OSSL_PROVIDER *deflt = OSSL_PROVIDER_load(multi_libctx, "default");
+
+    if (!TEST_ptr(deflt)
+            || !TEST_true(OSSL_PROVIDER_available(multi_libctx, "default")))
+        multi_success = 0;
+
+    OSSL_PROVIDER_unload(deflt);
+}
+
 /*
  * Do work in multiple worker threads at the same time.
  * Test 0: General worker, using the default provider
  * Test 1: General worker, using the fips provider
  * Test 2: Simple fetch worker
- * Test 3: Worker using a shared EVP_PKEY
+ * Test 3: Worker downgrading a shared EVP_PKEY
+ * Test 4: Worker using a shared EVP_PKEY
+ * Test 5: Workder loading and unloading a provider
  */
 static int test_multi(int idx)
 {
     thread_t thread1, thread2;
     int testresult = 0;
     OSSL_PROVIDER *prov = NULL, *prov2 = NULL;
-    void (*worker)(void);
+    void (*worker)(void) = NULL;
+    void (*worker2)(void) = NULL;
+    EVP_MD *sha256 = NULL;
 
     if (idx == 1 && !do_fips)
         return TEST_skip("FIPS not supported");
+
+#ifdef OPENSSL_NO_DEPRECATED_3_0
+    if (idx == 3)
+        return TEST_skip("Skipping tests for deprected functions");
+#endif
 
     multi_success = 1;
     multi_libctx = OSSL_LIB_CTX_new();
@@ -435,6 +473,9 @@ static int test_multi(int idx)
         worker = thread_multi_simple_fetch;
         break;
     case 3:
+        worker2 = thread_downgrade_shared_evp_pkey;
+        /* fall through */
+    case 4:
         /*
          * If available we have both the default and fips providers for this
          * test
@@ -446,13 +487,26 @@ static int test_multi(int idx)
             goto err;
         worker = thread_shared_evp_pkey;
         break;
+    case 5:
+        /*
+         * We ensure we get an md from the default provider, and then unload the
+         * provider. This ensures the provider remains around but in a
+         * deactivated state.
+         */
+        sha256 = EVP_MD_fetch(multi_libctx, "SHA2-256", NULL);
+        OSSL_PROVIDER_unload(prov);
+        prov = NULL;
+        worker = thread_provider_load_unload;
+        break;
     default:
         TEST_error("Invalid test index");
         goto err;
     }
+    if (worker2 == NULL)
+        worker2 = worker;
 
     if (!TEST_true(run_thread(&thread1, worker))
-            || !TEST_true(run_thread(&thread2, worker)))
+            || !TEST_true(run_thread(&thread2, worker2)))
         goto err;
 
     worker();
@@ -465,11 +519,71 @@ static int test_multi(int idx)
     testresult = 1;
 
  err:
+    EVP_MD_free(sha256);
     OSSL_PROVIDER_unload(prov);
     OSSL_PROVIDER_unload(prov2);
     OSSL_LIB_CTX_free(multi_libctx);
     EVP_PKEY_free(shared_evp_pkey);
     shared_evp_pkey = NULL;
+    multi_libctx = NULL;
+    return testresult;
+}
+
+/*
+ * This test attempts to load several providers at the same time, and if
+ * run with a thread sanitizer, should crash if the core provider code
+ * doesn't synchronize well enough.
+ */
+#define MULTI_LOAD_THREADS 3
+static void test_multi_load_worker(void)
+{
+    OSSL_PROVIDER *prov;
+
+    (void)TEST_ptr(prov = OSSL_PROVIDER_load(NULL, "default"));
+    (void)TEST_true(OSSL_PROVIDER_unload(prov));
+}
+
+static int test_multi_load(void)
+{
+    thread_t threads[MULTI_LOAD_THREADS];
+    int i;
+
+    for (i = 0; i < MULTI_LOAD_THREADS; i++)
+        (void)TEST_true(run_thread(&threads[i], test_multi_load_worker));
+
+    for (i = 0; i < MULTI_LOAD_THREADS; i++)
+        (void)TEST_true(wait_for_thread(threads[i]));
+
+    return 1;
+}
+
+static int test_multi_default(void)
+{
+    thread_t thread1, thread2;
+    int testresult = 0;
+    OSSL_PROVIDER *prov = NULL;
+
+    multi_success = 1;
+    multi_libctx = NULL;
+    prov = OSSL_PROVIDER_load(multi_libctx, "default");
+    if (!TEST_ptr(prov))
+        goto err;
+
+    if (!TEST_true(run_thread(&thread1, thread_multi_simple_fetch))
+            || !TEST_true(run_thread(&thread2, thread_multi_simple_fetch)))
+        goto err;
+
+    thread_multi_simple_fetch();
+
+    if (!TEST_true(wait_for_thread(thread1))
+            || !TEST_true(wait_for_thread(thread2))
+            || !TEST_true(multi_success))
+        goto err;
+
+    testresult = 1;
+
+ err:
+    OSSL_PROVIDER_unload(prov);
     return testresult;
 }
 
@@ -514,11 +628,15 @@ int setup_tests(void)
     if (!TEST_ptr(privkey))
         return 0;
 
+    /* Keep first to validate auto creation of default library context */
+    ADD_TEST(test_multi_default);
+
     ADD_TEST(test_lock);
     ADD_TEST(test_once);
     ADD_TEST(test_thread_local);
     ADD_TEST(test_atomic);
-    ADD_ALL_TESTS(test_multi, 4);
+    ADD_TEST(test_multi_load);
+    ADD_ALL_TESTS(test_multi, 6);
     return 1;
 }
 

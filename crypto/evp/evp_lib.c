@@ -243,10 +243,10 @@ int evp_cipher_get_asn1_aead_params(EVP_CIPHER_CTX *c, ASN1_TYPE *type,
     if (type == NULL || asn1_params == NULL)
         return 0;
 
-    i = asn1_type_get_octetstring_int(type, &tl, NULL, EVP_MAX_IV_LENGTH);
+    i = ossl_asn1_type_get_octetstring_int(type, &tl, NULL, EVP_MAX_IV_LENGTH);
     if (i <= 0)
         return -1;
-    asn1_type_get_octetstring_int(type, &tl, iv, i);
+    ossl_asn1_type_get_octetstring_int(type, &tl, iv, i);
 
     memcpy(asn1_params->iv, iv, i);
     asn1_params->iv_len = i;
@@ -260,16 +260,17 @@ int evp_cipher_set_asn1_aead_params(EVP_CIPHER_CTX *c, ASN1_TYPE *type,
     if (type == NULL || asn1_params == NULL)
         return 0;
 
-    return asn1_type_set_octetstring_int(type, asn1_params->tag_len,
-                                         asn1_params->iv, asn1_params->iv_len);
+    return ossl_asn1_type_set_octetstring_int(type, asn1_params->tag_len,
+                                              asn1_params->iv,
+                                              asn1_params->iv_len);
 }
 #endif /* !defined(FIPS_MODULE) */
 
 /* Convert the various cipher NIDs and dummies to a proper OID NID */
-int EVP_CIPHER_type(const EVP_CIPHER *ctx)
+int EVP_CIPHER_type(const EVP_CIPHER *cipher)
 {
     int nid;
-    nid = EVP_CIPHER_nid(ctx);
+    nid = EVP_CIPHER_nid(cipher);
 
     switch (nid) {
 
@@ -421,9 +422,32 @@ int EVP_Cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
     return ctx->cipher->do_cipher(ctx, out, in, inl);
 }
 
+#ifndef OPENSSL_NO_DEPRECATED_3_0
 const EVP_CIPHER *EVP_CIPHER_CTX_cipher(const EVP_CIPHER_CTX *ctx)
 {
+    if (ctx == NULL)
+        return NULL;
     return ctx->cipher;
+}
+#endif
+
+const EVP_CIPHER *EVP_CIPHER_CTX_get0_cipher(const EVP_CIPHER_CTX *ctx)
+{
+    if (ctx == NULL)
+        return NULL;
+    return ctx->cipher;
+}
+
+EVP_CIPHER *EVP_CIPHER_CTX_get1_cipher(EVP_CIPHER_CTX *ctx)
+{
+    EVP_CIPHER *cipher;
+
+    if (ctx == NULL)
+        return NULL;
+    cipher = (EVP_CIPHER *)ctx->cipher;
+    if (!EVP_CIPHER_up_ref(cipher))
+        return NULL;
+    return cipher;
 }
 
 int EVP_CIPHER_CTX_encrypting(const EVP_CIPHER_CTX *ctx)
@@ -477,7 +501,7 @@ int EVP_CIPHER_CTX_iv_length(const EVP_CIPHER_CTX *ctx)
     if (rv == EVP_CTRL_RET_UNSUPPORTED)
         goto legacy;
     return rv != 0 ? (int)v : -1;
-    /* TODO (3.0) Remove legacy support */
+    /* Code below to be removed when legacy support is dropped. */
 legacy:
     if ((EVP_CIPHER_flags(ctx->cipher) & EVP_CIPH_CUSTOM_IV_LENGTH) != 0) {
         rv = EVP_CIPHER_CTX_ctrl((EVP_CIPHER_CTX *)ctx, EVP_CTRL_GET_IVLEN,
@@ -635,8 +659,8 @@ int EVP_CIPHER_number(const EVP_CIPHER *cipher)
 
 const char *EVP_CIPHER_name(const EVP_CIPHER *cipher)
 {
-    if (cipher->prov != NULL)
-        return evp_first_name(cipher->prov, cipher->name_id);
+    if (cipher->type_name != NULL)
+        return cipher->type_name;
 #ifndef FIPS_MODULE
     return OBJ_nid2sn(EVP_CIPHER_nid(cipher));
 #else
@@ -644,12 +668,25 @@ const char *EVP_CIPHER_name(const EVP_CIPHER *cipher)
 #endif
 }
 
-void EVP_CIPHER_names_do_all(const EVP_CIPHER *cipher,
-                             void (*fn)(const char *name, void *data),
-                             void *data)
+const char *EVP_CIPHER_description(const EVP_CIPHER *cipher)
+{
+    if (cipher->description != NULL)
+        return cipher->description;
+#ifndef FIPS_MODULE
+    return OBJ_nid2ln(EVP_CIPHER_nid(cipher));
+#else
+    return NULL;
+#endif
+}
+
+int EVP_CIPHER_names_do_all(const EVP_CIPHER *cipher,
+                            void (*fn)(const char *name, void *data),
+                            void *data)
 {
     if (cipher->prov != NULL)
-        evp_names_do_all(cipher->prov, cipher->name_id, fn, data);
+        return evp_names_do_all(cipher->prov, cipher->name_id, fn, data);
+
+    return 1;
 }
 
 const OSSL_PROVIDER *EVP_CIPHER_provider(const EVP_CIPHER *cipher)
@@ -674,10 +711,23 @@ int EVP_MD_number(const EVP_MD *md)
     return md->name_id;
 }
 
+const char *EVP_MD_description(const EVP_MD *md)
+{
+    if (md->description != NULL)
+        return md->description;
+#ifndef FIPS_MODULE
+    return OBJ_nid2ln(EVP_MD_nid(md));
+#else
+    return NULL;
+#endif
+}
+
 const char *EVP_MD_name(const EVP_MD *md)
 {
-    if (md->prov != NULL)
-        return evp_first_name(md->prov, md->name_id);
+    if (md == NULL)
+        return NULL;
+    if (md->type_name != NULL)
+        return md->type_name;
 #ifndef FIPS_MODULE
     return OBJ_nid2sn(EVP_MD_nid(md));
 #else
@@ -685,12 +735,14 @@ const char *EVP_MD_name(const EVP_MD *md)
 #endif
 }
 
-void EVP_MD_names_do_all(const EVP_MD *md,
-                         void (*fn)(const char *name, void *data),
-                         void *data)
+int EVP_MD_names_do_all(const EVP_MD *md,
+                        void (*fn)(const char *name, void *data),
+                        void *data)
 {
     if (md->prov != NULL)
-        evp_names_do_all(md->prov, md->name_id, fn, data);
+        return evp_names_do_all(md->prov, md->name_id, fn, data);
+
+    return 1;
 }
 
 const OSSL_PROVIDER *EVP_MD_provider(const EVP_MD *md)
@@ -738,6 +790,7 @@ EVP_MD *EVP_MD_meth_new(int md_type, int pkey_type)
     if (md != NULL) {
         md->type = md_type;
         md->pkey_type = pkey_type;
+        md->origin = EVP_ORIG_METH;
     }
     return md;
 }
@@ -762,10 +815,22 @@ EVP_MD *EVP_MD_meth_dup(const EVP_MD *md)
     return to;
 }
 
+void evp_md_free_int(EVP_MD *md)
+{
+    OPENSSL_free(md->type_name);
+    ossl_provider_free(md->prov);
+    CRYPTO_THREAD_lock_free(md->lock);
+    OPENSSL_free(md);
+}
+
 void EVP_MD_meth_free(EVP_MD *md)
 {
-    EVP_MD_free(md);
+    if (md == NULL || md->origin != EVP_ORIG_METH)
+       return;
+
+    evp_md_free_int(md);
 }
+
 int EVP_MD_meth_set_input_blocksize(EVP_MD *md, int blocksize)
 {
     if (md->block_size != 0)
@@ -898,11 +963,32 @@ int (*EVP_MD_meth_get_ctrl(const EVP_MD *md))(EVP_MD_CTX *ctx, int cmd,
     return md->md_ctrl;
 }
 
+#ifndef OPENSSL_NO_DEPRECATED_3_0
 const EVP_MD *EVP_MD_CTX_md(const EVP_MD_CTX *ctx)
 {
     if (ctx == NULL)
         return NULL;
     return ctx->reqdigest;
+}
+#endif
+
+const EVP_MD *EVP_MD_CTX_get0_md(const EVP_MD_CTX *ctx)
+{
+    if (ctx == NULL)
+        return NULL;
+    return ctx->reqdigest;
+}
+
+EVP_MD *EVP_MD_CTX_get1_md(EVP_MD_CTX *ctx)
+{
+    EVP_MD *md;
+
+    if (ctx == NULL)
+        return NULL;
+    md = (EVP_MD *)ctx->reqdigest;
+    if (!EVP_MD_up_ref(md))
+        return NULL;
+    return md;
 }
 
 EVP_PKEY_CTX *EVP_MD_CTX_pkey_ctx(const EVP_MD_CTX *ctx)
@@ -983,32 +1069,8 @@ int EVP_CIPHER_CTX_test_flags(const EVP_CIPHER_CTX *ctx, int flags)
 int EVP_PKEY_CTX_set_group_name(EVP_PKEY_CTX *ctx, const char *name)
 {
     OSSL_PARAM params[] = { OSSL_PARAM_END, OSSL_PARAM_END };
-    OSSL_PARAM *p = params;
 
-    if (ctx == NULL) {
-        ERR_raise(ERR_LIB_EVP, EVP_R_COMMAND_NOT_SUPPORTED);
-        /* Uses the same return values as EVP_PKEY_CTX_ctrl */
-        return -2;
-    }
-
-    if (!EVP_PKEY_CTX_IS_GEN_OP(ctx)) {
-#ifndef FIPS_MODULE
-        int nid;
-
-        /* Could be a legacy key, try and convert to a ctrl */
-        if (ctx->pmeth != NULL && (nid = OBJ_txt2nid(name)) != NID_undef) {
-            if (ctx->pmeth->pkey_id == EVP_PKEY_DH)
-                return EVP_PKEY_CTX_ctrl(ctx, EVP_PKEY_DH,
-                                         EVP_PKEY_OP_PARAMGEN
-                                         | EVP_PKEY_OP_KEYGEN,
-                                         EVP_PKEY_CTRL_DH_NID, nid, NULL);
-            if (ctx->pmeth->pkey_id == EVP_PKEY_EC)
-                return EVP_PKEY_CTX_ctrl(ctx, EVP_PKEY_EC,
-                                         EVP_PKEY_OP_PARAMGEN|EVP_PKEY_OP_KEYGEN,
-                                         EVP_PKEY_CTRL_EC_PARAMGEN_CURVE_NID,
-                                         nid, NULL);
-        }
-#endif
+    if (ctx == NULL || !EVP_PKEY_CTX_IS_GEN_OP(ctx)) {
         ERR_raise(ERR_LIB_EVP, EVP_R_COMMAND_NOT_SUPPORTED);
         /* Uses the same return values as EVP_PKEY_CTX_ctrl */
         return -2;
@@ -1017,8 +1079,8 @@ int EVP_PKEY_CTX_set_group_name(EVP_PKEY_CTX *ctx, const char *name)
     if (name == NULL)
         return -1;
 
-    *p++ = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME,
-                                            (char *)name, 0);
+    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME,
+                                                 (char *)name, 0);
     return EVP_PKEY_CTX_set_params(ctx, params);
 }
 

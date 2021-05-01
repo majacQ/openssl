@@ -11,6 +11,7 @@
 #include <openssl/evp.h>
 #include <openssl/params.h>
 #include <openssl/crypto.h>
+#include <internal/cryptlib.h>
 #include <openssl/fipskey.h>
 #include <openssl/err.h>
 #include <openssl/proverr.h>
@@ -171,7 +172,7 @@ static int verify_integrity(OSSL_CORE_BIO *bio, OSSL_FUNC_BIO_read_ex_fn read_ex
     size_t bytes_read = 0, out_len = 0;
     EVP_MAC *mac = NULL;
     EVP_MAC_CTX *ctx = NULL;
-    OSSL_PARAM params[3], *p = params;
+    OSSL_PARAM params[2], *p = params;
 
     OSSL_SELF_TEST_onbegin(ev, event_type, OSSL_SELF_TEST_DESC_INTEGRITY_HMAC);
 
@@ -183,12 +184,9 @@ static int verify_integrity(OSSL_CORE_BIO *bio, OSSL_FUNC_BIO_read_ex_fn read_ex
         goto err;
 
     *p++ = OSSL_PARAM_construct_utf8_string("digest", DIGEST_NAME, 0);
-    *p++ = OSSL_PARAM_construct_octet_string("key", fixed_key,
-                                             sizeof(fixed_key));
     *p = OSSL_PARAM_construct_end();
 
-    if (EVP_MAC_CTX_set_params(ctx, params) <= 0
-        || !EVP_MAC_init(ctx))
+    if (!EVP_MAC_init(ctx, fixed_key, sizeof(fixed_key), params))
         goto err;
 
     while (1) {
@@ -215,9 +213,10 @@ err:
 
 static void set_fips_state(int state)
 {
-    CRYPTO_THREAD_write_lock(fips_state_lock);
-    FIPS_state = state;
-    CRYPTO_THREAD_unlock(fips_state_lock);
+    if (ossl_assert(CRYPTO_THREAD_write_lock(fips_state_lock) != 0)) {
+        FIPS_state = state;
+        CRYPTO_THREAD_unlock(fips_state_lock);
+    }
 }
 
 /* This API is triggered either on loading of the FIPS module or on demand */
@@ -235,7 +234,8 @@ int SELF_TEST_post(SELF_TEST_POST_PARAMS *st, int on_demand_test)
     if (!RUN_ONCE(&fips_self_test_init, do_fips_self_test_init))
         return 0;
 
-    CRYPTO_THREAD_read_lock(fips_state_lock);
+    if (!CRYPTO_THREAD_read_lock(fips_state_lock))
+        return 0;
     loclstate = FIPS_state;
     CRYPTO_THREAD_unlock(fips_state_lock);
 
@@ -247,8 +247,12 @@ int SELF_TEST_post(SELF_TEST_POST_PARAMS *st, int on_demand_test)
         return 0;
     }
 
-    CRYPTO_THREAD_write_lock(self_test_lock);
-    CRYPTO_THREAD_read_lock(fips_state_lock);
+    if (!CRYPTO_THREAD_write_lock(self_test_lock))
+        return 0;
+    if (!CRYPTO_THREAD_read_lock(fips_state_lock)) {
+        CRYPTO_THREAD_unlock(self_test_lock);
+        return 0;
+    }
     if (FIPS_state == FIPS_STATE_RUNNING) {
         CRYPTO_THREAD_unlock(fips_state_lock);
         if (!on_demand_test) {

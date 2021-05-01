@@ -219,7 +219,7 @@ struct collect_decoder_data_st {
     STACK_OF(OPENSSL_CSTRING) *names;
     OSSL_DECODER_CTX *ctx;
 
-    unsigned int error_occured:1;
+    unsigned int error_occurred:1;
 };
 
 static void collect_decoder(OSSL_DECODER *decoder, void *arg)
@@ -229,10 +229,10 @@ static void collect_decoder(OSSL_DECODER *decoder, void *arg)
     const OSSL_PROVIDER *prov = OSSL_DECODER_provider(decoder);
     void *provctx = OSSL_PROVIDER_get0_provider_ctx(prov);
 
-    if (data->error_occured)
+    if (data->error_occurred)
         return;
 
-    data->error_occured = 1;         /* Assume the worst */
+    data->error_occurred = 1;         /* Assume the worst */
     if (data->names == NULL)
         return;
 
@@ -266,7 +266,7 @@ static void collect_decoder(OSSL_DECODER *decoder, void *arg)
         decoder->freectx(decoderctx);
     }
 
-    data->error_occured = 0;         /* All is good now */
+    data->error_occurred = 0;         /* All is good now */
 }
 
 int ossl_decoder_ctx_setup_for_pkey(OSSL_DECODER_CTX *ctx,
@@ -302,12 +302,17 @@ int ossl_decoder_ctx_setup_for_pkey(OSSL_DECODER_CTX *ctx,
          * If the key type is given by the caller, we only use the matching
          * KEYMGMTs, otherwise we use them all.
          */
-        if (keytype == NULL || EVP_KEYMGMT_is_a(keymgmt, keytype))
-            EVP_KEYMGMT_names_do_all(keymgmt, collect_name, names);
+        if (keytype == NULL || EVP_KEYMGMT_is_a(keymgmt, keytype)) {
+            if (!EVP_KEYMGMT_names_do_all(keymgmt, collect_name, names)) {
+                ERR_raise(ERR_LIB_OSSL_DECODER, ERR_R_INTERNAL_ERROR);
+                goto err;
+            }
+        }
 
         EVP_KEYMGMT_free(keymgmt);
     }
     sk_EVP_KEYMGMT_free(keymgmts);
+    keymgmts = NULL;
 
     /*
      * Finally, find all decoders that have any keymgmt of the collected
@@ -321,8 +326,9 @@ int ossl_decoder_ctx_setup_for_pkey(OSSL_DECODER_CTX *ctx,
         OSSL_DECODER_do_all_provided(libctx,
                                      collect_decoder, &collect_decoder_data);
         sk_OPENSSL_CSTRING_free(names);
+        names = NULL;
 
-        if (collect_decoder_data.error_occured)
+        if (collect_decoder_data.error_occurred)
             goto err;
     }
 
@@ -339,6 +345,9 @@ int ossl_decoder_ctx_setup_for_pkey(OSSL_DECODER_CTX *ctx,
     ok = 1;
  err:
     decoder_clean_pkey_construct_arg(process_data);
+    sk_EVP_KEYMGMT_pop_free(keymgmts, EVP_KEYMGMT_free);
+    sk_OPENSSL_CSTRING_free(names);
+
     return ok;
 }
 

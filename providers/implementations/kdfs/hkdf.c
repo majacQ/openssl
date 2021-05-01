@@ -30,7 +30,7 @@
 #include "prov/provider_util.h"
 #include "e_os.h"
 
-#define HKDF_MAXBUF 1024
+#define HKDF_MAXBUF 2048
 
 static OSSL_FUNC_kdf_newctx_fn kdf_hkdf_new;
 static OSSL_FUNC_kdf_freectx_fn kdf_hkdf_free;
@@ -123,12 +123,13 @@ static size_t kdf_hkdf_size(KDF_HKDF *ctx)
     return sz;
 }
 
-static int kdf_hkdf_derive(void *vctx, unsigned char *key, size_t keylen)
+static int kdf_hkdf_derive(void *vctx, unsigned char *key, size_t keylen,
+                           const OSSL_PARAM params[])
 {
     KDF_HKDF *ctx = (KDF_HKDF *)vctx;
     const EVP_MD *md;
 
-    if (!ossl_prov_is_running())
+    if (!ossl_prov_is_running() || !kdf_hkdf_set_ctx_params(ctx, params))
         return 0;
 
     md = ossl_prov_digest_md(&ctx->digest);
@@ -170,6 +171,9 @@ static int kdf_hkdf_set_ctx_params(void *vctx, const OSSL_PARAM params[])
     KDF_HKDF *ctx = vctx;
     OSSL_LIB_CTX *provctx = PROV_LIBCTX_OF(ctx->provctx);
     int n;
+
+    if (params == NULL)
+        return 1;
 
     if (!ossl_prov_digest_load_from_params(&ctx->digest, params, provctx))
         return 0;
@@ -237,7 +241,8 @@ static int kdf_hkdf_set_ctx_params(void *vctx, const OSSL_PARAM params[])
     return 1;
 }
 
-static const OSSL_PARAM *kdf_hkdf_settable_ctx_params(ossl_unused void *provctx)
+static const OSSL_PARAM *kdf_hkdf_settable_ctx_params(ossl_unused void *ctx,
+                                                      ossl_unused void *provctx)
 {
     static const OSSL_PARAM known_settable_ctx_params[] = {
         OSSL_PARAM_utf8_string(OSSL_KDF_PARAM_MODE, NULL, 0),
@@ -262,7 +267,8 @@ static int kdf_hkdf_get_ctx_params(void *vctx, OSSL_PARAM params[])
     return -2;
 }
 
-static const OSSL_PARAM *kdf_hkdf_gettable_ctx_params(ossl_unused void *provctx)
+static const OSSL_PARAM *kdf_hkdf_gettable_ctx_params(ossl_unused void *ctx,
+                                                      ossl_unused void *provctx)
 {
     static const OSSL_PARAM known_gettable_ctx_params[] = {
         OSSL_PARAM_size_t(OSSL_KDF_PARAM_SIZE, NULL),

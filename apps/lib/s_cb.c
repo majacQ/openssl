@@ -741,7 +741,7 @@ int generate_cookie_callback(SSL *ssl, unsigned char *cookie,
     int res = 0;
     EVP_MAC *hmac = NULL;
     EVP_MAC_CTX *ctx = NULL;
-    OSSL_PARAM params[3], *p = params;
+    OSSL_PARAM params[2], *p = params;
     size_t mac_len;
 
     /* Initialize a random secret */
@@ -792,14 +792,8 @@ int generate_cookie_callback(SSL *ssl, unsigned char *cookie,
             goto end;
     }
     *p++ = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, "SHA1", 0);
-    *p++ = OSSL_PARAM_construct_octet_string(OSSL_MAC_PARAM_KEY, cookie_secret,
-                                             COOKIE_SECRET_LENGTH);
     *p = OSSL_PARAM_construct_end();
-    if (!EVP_MAC_CTX_set_params(ctx, params)) {
-            BIO_printf(bio_err, "HMAC context parameter setting failed\n");
-            goto end;
-    }
-    if (!EVP_MAC_init(ctx)) {
+    if (!EVP_MAC_init(ctx, cookie_secret, COOKIE_SECRET_LENGTH, params)) {
             BIO_printf(bio_err, "HMAC context initialisation failed\n");
             goto end;
     }
@@ -958,7 +952,8 @@ static int set_cert_cb(SSL *ssl, void *arg)
                 if (!SSL_build_cert_chain(ssl, 0))
                     return 0;
             } else if (exc->chain != NULL) {
-                SSL_set1_chain(ssl, exc->chain);
+                if (!SSL_set1_chain(ssl, exc->chain))
+                    return 0;
             }
         }
         exc = exc->prev;
@@ -1037,7 +1032,7 @@ int load_excert(SSL_EXCERT **pexc)
         if (exc->key == NULL)
             return 0;
         if (exc->chainfile != NULL) {
-            if (!load_certs(exc->chainfile, &exc->chain, NULL, "server chain"))
+            if (!load_certs(exc->chainfile, 0, &exc->chain, NULL, "server chain"))
                 return 0;
         }
     }
@@ -1281,12 +1276,14 @@ int config_ctx(SSL_CONF_CTX *cctx, STACK_OF(OPENSSL_STRING) *str,
 static int add_crls_store(X509_STORE *st, STACK_OF(X509_CRL) *crls)
 {
     X509_CRL *crl;
-    int i;
+    int i, ret = 1;
+
     for (i = 0; i < sk_X509_CRL_num(crls); i++) {
         crl = sk_X509_CRL_value(crls, i);
-        X509_STORE_add_crl(st, crl);
+        if (!X509_STORE_add_crl(st, crl))
+            ret = 0;
     }
-    return 1;
+    return ret;
 }
 
 int ssl_ctx_add_crls(SSL_CTX *ctx, STACK_OF(X509_CRL) *crls, int crl_download)

@@ -8,8 +8,8 @@
  */
 
 /* Macros to build Self test data */
-#define ITM(x) x, sizeof(x)
-#define ITM_STR(x) x, (sizeof(x) - 1)
+#define ITM(x) ((void *)&x), sizeof(x)
+#define ITM_STR(x) ((void *)&x), (sizeof(x) - 1)
 
 #define ST_KAT_PARAM_END() { "", 0, NULL, 0 }
 #define ST_KAT_PARAM_BIGNUM(name, data)                                        \
@@ -18,8 +18,10 @@
     { name, OSSL_PARAM_OCTET_STRING, ITM(data) }
 #define ST_KAT_PARAM_UTF8STRING(name, data)                                    \
     { name, OSSL_PARAM_UTF8_STRING, ITM_STR(data) }
+#define ST_KAT_PARAM_UTF8CHAR(name, data)                                    \
+    { name, OSSL_PARAM_UTF8_STRING, ITM(data) }
 #define ST_KAT_PARAM_INT(name, i)                                              \
-    { name, OSSL_PARAM_INTEGER, &i, sizeof(i) }
+    { name, OSSL_PARAM_INTEGER, ITM(i) }
 
 /* used to store raw parameters for keys and algorithms */
 typedef struct st_kat_param_st {
@@ -38,9 +40,14 @@ typedef struct st_kat_st {
     size_t expected_len;
 } ST_KAT;
 
+#define CIPHER_MODE_ENCRYPT 1
+#define CIPHER_MODE_DECRYPT 2
+#define CIPHER_MODE_ALL     (CIPHER_MODE_ENCRYPT | CIPHER_MODE_DECRYPT)
+
 typedef ST_KAT ST_KAT_DIGEST;
 typedef struct st_kat_cipher_st {
     ST_KAT base;
+    int mode;
     const unsigned char *key;
     size_t key_len;
     const unsigned char *iv;
@@ -213,6 +220,20 @@ static const unsigned char aes_256_gcm_tag[] = {
     0x14, 0xd9, 0xc5, 0x1e, 0x1d, 0xa4, 0x74, 0xab
 };
 
+/* AES-ECB test data */
+static const unsigned char aes_128_ecb_key[] = {
+    0x10, 0xa5, 0x88, 0x69, 0xd7, 0x4b, 0xe5, 0xa3,
+    0x74, 0xcf, 0x86, 0x7c, 0xfb, 0x47, 0x38, 0x59
+};
+static const unsigned char aes_128_ecb_pt[] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+static const unsigned char aes_128_ecb_ct[] = {
+    0x6d, 0x25, 0x1e, 0x69, 0x44, 0xb0, 0x51, 0xe0,
+    0x4e, 0xaa, 0x6f, 0xb4, 0xdb, 0xf7, 0x84, 0x65
+};
+
 static const ST_KAT_CIPHER st_kat_cipher_tests[] = {
 #ifndef OPENSSL_NO_DES
     {
@@ -222,6 +243,7 @@ static const ST_KAT_CIPHER st_kat_cipher_tests[] = {
             ITM(des_ede3_cbc_pt),
             ITM(des_ede3_cbc_ct)
         },
+        CIPHER_MODE_ENCRYPT | CIPHER_MODE_DECRYPT,
         ITM(des_ede3_cbc_key),
         ITM(des_ede3_cbc_iv),
     },
@@ -231,12 +253,23 @@ static const ST_KAT_CIPHER st_kat_cipher_tests[] = {
             OSSL_SELF_TEST_DESC_CIPHER_AES_GCM,
             "AES-256-GCM",
             ITM(aes_256_gcm_pt),
-            ITM(aes_256_gcm_ct),
+            ITM(aes_256_gcm_ct)
         },
+        CIPHER_MODE_ENCRYPT,
         ITM(aes_256_gcm_key),
         ITM(aes_256_gcm_iv),
         ITM(aes_256_gcm_aad),
         ITM(aes_256_gcm_tag)
+    },
+    {
+        {
+            OSSL_SELF_TEST_DESC_CIPHER_AES_ECB,
+            "AES-128-ECB",
+            ITM(aes_128_ecb_pt),
+            ITM(aes_128_ecb_ct)
+        },
+        CIPHER_MODE_DECRYPT,
+        ITM(aes_128_ecb_key)
     }
 };
 
@@ -351,7 +384,7 @@ static const ST_KAT_PARAM pbkdf2_params[] = {
 };
 
 static const char sshkdf_digest[] = "SHA1";
-static const char sshkdf_type[] = EVP_KDF_SSHKDF_TYPE_INITIAL_IV_CLI_TO_SRV;
+static const char sshkdf_type = EVP_KDF_SSHKDF_TYPE_INITIAL_IV_CLI_TO_SRV;
 static const unsigned char sshkdf_key[] = {
     0x00, 0x00, 0x00, 0x80, 0x55, 0xba, 0xe9, 0x31,
     0xc0, 0x7f, 0xd8, 0x24, 0xbf, 0x10, 0xad, 0xd1,
@@ -386,7 +419,7 @@ static const unsigned char sshkdf_expected[] = {
 };
 static const ST_KAT_PARAM sshkdf_params[] = {
     ST_KAT_PARAM_UTF8STRING(OSSL_KDF_PARAM_DIGEST, sshkdf_digest),
-    ST_KAT_PARAM_UTF8STRING(OSSL_KDF_PARAM_SSHKDF_TYPE, sshkdf_type),
+    ST_KAT_PARAM_UTF8CHAR(OSSL_KDF_PARAM_SSHKDF_TYPE, sshkdf_type),
     ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_KEY, sshkdf_key),
     ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_SSHKDF_XCGHASH, sshkdf_xcghash),
     ST_KAT_PARAM_OCTET(OSSL_KDF_PARAM_SSHKDF_SESSION_ID, sshkdf_session_id),

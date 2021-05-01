@@ -69,8 +69,7 @@ static int tls1_PRF(SSL *s,
     *p++ = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SEED,
                                              (void *)seed5, (size_t)seed5_len);
     *p = OSSL_PARAM_construct_end();
-    if (EVP_KDF_CTX_set_params(kctx, params)
-            && EVP_KDF_derive(kctx, out, olen)) {
+    if (EVP_KDF_derive(kctx, out, olen, params)) {
         EVP_KDF_CTX_free(kctx);
         return 1;
     }
@@ -379,7 +378,8 @@ int tls1_change_cipher_state(SSL *s, int which)
         }
         if (mac_key == NULL
             || EVP_DigestSignInit_ex(mac_ctx, NULL, EVP_MD_name(m),
-                                     s->ctx->libctx, s->ctx->propq, mac_key) <= 0) {
+                                     s->ctx->libctx, s->ctx->propq, mac_key,
+                                     NULL) <= 0) {
             EVP_PKEY_free(mac_key);
             SSLfatal(s, SSL_AD_INTERNAL_ERROR, ERR_R_INTERNAL_ERROR);
             goto err;
@@ -434,11 +434,7 @@ int tls1_change_cipher_state(SSL *s, int which)
     }
 
 #ifndef OPENSSL_NO_KTLS
-    if (s->compress)
-        goto skip_ktls;
-
-    if (((which & SSL3_CC_READ) && (s->mode & SSL_MODE_NO_KTLS_RX))
-        || ((which & SSL3_CC_WRITE) && (s->mode & SSL_MODE_NO_KTLS_TX)))
+    if (s->compress || (s->options & SSL_OP_ENABLE_KTLS) == 0)
         goto skip_ktls;
 
     /* ktls supports only the maximum fragment size */
@@ -564,7 +560,7 @@ int tls1_setup_key_block(SSL *s)
     s->s3.tmp.key_block = p;
 
     OSSL_TRACE_BEGIN(TLS) {
-        BIO_printf(trc_out, "key block length: %ld\n", num);
+        BIO_printf(trc_out, "key block length: %zu\n", num);
         BIO_printf(trc_out, "client random\n");
         BIO_dump_indent(trc_out, s->s3.client_random, SSL3_RANDOM_SIZE, 4);
         BIO_printf(trc_out, "server random\n");

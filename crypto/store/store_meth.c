@@ -93,7 +93,7 @@ struct loader_data_st {
     const char *scheme;          /* For get_loader_from_store() */
     const char *propquery;       /* For get_loader_from_store() */
 
-    unsigned int flag_construct_error_occured : 1;
+    unsigned int flag_construct_error_occurred : 1;
 };
 
 /*
@@ -162,8 +162,8 @@ static int put_loader_in_store(OSSL_LIB_CTX *libctx, void *store,
                                  up_ref_loader, free_loader);
 }
 
-static void *loader_from_dispatch(int scheme_id, const OSSL_ALGORITHM *algodef,
-                                  OSSL_PROVIDER *prov)
+static void *loader_from_algorithm(int scheme_id, const OSSL_ALGORITHM *algodef,
+                                   OSSL_PROVIDER *prov)
 {
     OSSL_STORE_LOADER *loader = NULL;
     const OSSL_DISPATCH *fns = algodef->implementation;
@@ -172,6 +172,7 @@ static void *loader_from_dispatch(int scheme_id, const OSSL_ALGORITHM *algodef,
         return NULL;
     loader->scheme_id = scheme_id;
     loader->propdef = algodef->property_definition;
+    loader->description = algodef->algorithm_description;
 
     for (; fns->function_id != 0; fns++) {
         switch (fns->function_id) {
@@ -226,7 +227,7 @@ static void *loader_from_dispatch(int scheme_id, const OSSL_ALGORITHM *algodef,
 /*
  * The core fetching functionality passes the scheme of the implementation.
  * This function is responsible to getting an identity number for them,
- * then call loader_from_dispatch() with that identity number.
+ * then call loader_from_algorithm() with that identity number.
  */
 static void *construct_loader(const OSSL_ALGORITHM *algodef,
                               OSSL_PROVIDER *prov, void *data)
@@ -245,7 +246,7 @@ static void *construct_loader(const OSSL_ALGORITHM *algodef,
     void *method = NULL;
 
     if (id != 0)
-        method = loader_from_dispatch(id, algodef, prov);
+        method = loader_from_algorithm(id, algodef, prov);
 
     /*
      * Flag to indicate that there was actual construction errors.  This
@@ -253,7 +254,7 @@ static void *construct_loader(const OSSL_ALGORITHM *algodef,
      * record on inaccessible algorithms.
      */
     if (method == NULL)
-        methdata->flag_construct_error_occured = 1;
+        methdata->flag_construct_error_occurred = 1;
 
     return method;
 }
@@ -280,7 +281,7 @@ static OSSL_STORE_LOADER *inner_loader_fetch(OSSL_LIB_CTX *libctx,
     }
 
     /*
-     * If we have been passed neither a scheme_id or a scheme, we have an
+     * If we have been passed neither a scheme_id nor a scheme, we have an
      * internal programming error.
      */
     if (!ossl_assert(id != 0 || scheme != NULL)) {
@@ -316,7 +317,7 @@ static OSSL_STORE_LOADER *inner_loader_fetch(OSSL_LIB_CTX *libctx,
         mcmdata.scheme_id = id;
         mcmdata.scheme = scheme;
         mcmdata.propquery = properties;
-        mcmdata.flag_construct_error_occured = 0;
+        mcmdata.flag_construct_error_occurred = 0;
         if ((method = ossl_method_construct(libctx, OSSL_OP_STORE,
                                             0 /* !force_cache */,
                                             &mcm, &mcmdata)) != NULL) {
@@ -335,7 +336,7 @@ static OSSL_STORE_LOADER *inner_loader_fetch(OSSL_LIB_CTX *libctx,
          * If we never were in the constructor, the algorithm to be fetched
          * is unsupported.
          */
-        unsupported = !mcmdata.flag_construct_error_occured;
+        unsupported = !mcmdata.flag_construct_error_occurred;
     }
 
     if (method == NULL) {
@@ -401,6 +402,11 @@ int OSSL_STORE_LOADER_number(const OSSL_STORE_LOADER *loader)
     return loader->scheme_id;
 }
 
+const char *OSSL_STORE_LOADER_description(const OSSL_STORE_LOADER *loader)
+{
+    return loader->description;
+}
+
 int OSSL_STORE_LOADER_is_a(const OSSL_STORE_LOADER *loader, const char *name)
 {
     if (loader->prov != NULL) {
@@ -430,7 +436,7 @@ static void loader_do_one(OSSL_PROVIDER *provider,
 
     if (id != 0)
         method =
-            loader_from_dispatch(id, algodef, provider);
+            loader_from_algorithm(id, algodef, provider);
 
     if (method != NULL) {
         data->user_fn(method, data->user_arg);
@@ -452,17 +458,19 @@ void OSSL_STORE_LOADER_do_all_provided(OSSL_LIB_CTX *libctx,
                           &data);
 }
 
-void OSSL_STORE_LOADER_names_do_all(const OSSL_STORE_LOADER *loader,
-                                    void (*fn)(const char *name, void *data),
-                                    void *data)
+int OSSL_STORE_LOADER_names_do_all(const OSSL_STORE_LOADER *loader,
+                                   void (*fn)(const char *name, void *data),
+                                   void *data)
 {
     if (loader == NULL)
-        return;
+        return 0;
 
     if (loader->prov != NULL) {
         OSSL_LIB_CTX *libctx = ossl_provider_libctx(loader->prov);
         OSSL_NAMEMAP *namemap = ossl_namemap_stored(libctx);
 
-        ossl_namemap_doall_names(namemap, loader->scheme_id, fn, data);
+        return ossl_namemap_doall_names(namemap, loader->scheme_id, fn, data);
     }
+
+    return 1;
 }

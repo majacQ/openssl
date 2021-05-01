@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2018-2021 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright (c) 2018-2019, Oracle and/or its affiliates.  All rights reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
@@ -47,12 +47,12 @@ EVP_KDF_CTX *EVP_KDF_CTX_new(EVP_KDF *kdf)
 
 void EVP_KDF_CTX_free(EVP_KDF_CTX *ctx)
 {
-    if (ctx != NULL) {
-        ctx->meth->freectx(ctx->data);
-        ctx->data = NULL;
-        EVP_KDF_free(ctx->meth);
-        OPENSSL_free(ctx);
-    }
+    if (ctx == NULL)
+        return;
+    ctx->meth->freectx(ctx->data);
+    ctx->data = NULL;
+    EVP_KDF_free(ctx->meth);
+    OPENSSL_free(ctx);
 }
 
 EVP_KDF_CTX *EVP_KDF_CTX_dup(const EVP_KDF_CTX *src)
@@ -90,9 +90,12 @@ int EVP_KDF_number(const EVP_KDF *kdf)
 
 const char *EVP_KDF_name(const EVP_KDF *kdf)
 {
-    if (kdf->prov != NULL)
-        return evp_first_name(kdf->prov, kdf->name_id);
-    return NULL;
+    return kdf->type_name;
+}
+
+const char *EVP_KDF_description(const EVP_KDF *kdf)
+{
+    return kdf->description;
 }
 
 int EVP_KDF_is_a(const EVP_KDF *kdf, const char *name)
@@ -137,12 +140,13 @@ size_t EVP_KDF_CTX_get_kdf_size(EVP_KDF_CTX *ctx)
     return 0;
 }
 
-int EVP_KDF_derive(EVP_KDF_CTX *ctx, unsigned char *key, size_t keylen)
+int EVP_KDF_derive(EVP_KDF_CTX *ctx, unsigned char *key, size_t keylen,
+                   const OSSL_PARAM params[])
 {
     if (ctx == NULL)
         return 0;
 
-    return ctx->meth->derive(ctx->data, key, keylen);
+    return ctx->meth->derive(ctx->data, key, keylen, params);
 }
 
 /*
@@ -172,10 +176,12 @@ int EVP_KDF_CTX_set_params(EVP_KDF_CTX *ctx, const OSSL_PARAM params[])
     return 1;
 }
 
-void EVP_KDF_names_do_all(const EVP_KDF *kdf,
-                          void (*fn)(const char *name, void *data),
-                          void *data)
+int EVP_KDF_names_do_all(const EVP_KDF *kdf,
+                         void (*fn)(const char *name, void *data),
+                         void *data)
 {
     if (kdf->prov != NULL)
-        evp_names_do_all(kdf->prov, kdf->name_id, fn, data);
+        return evp_names_do_all(kdf->prov, kdf->name_id, fn, data);
+
+    return 1;
 }

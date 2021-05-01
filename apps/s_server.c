@@ -472,8 +472,8 @@ static int get_ocsp_resp_from_responder(SSL *s, tlsextstatusctx *srctx,
     x = SSL_get_certificate(s);
     aia = X509_get1_ocsp(x);
     if (aia != NULL) {
-        if (!OSSL_HTTP_parse_url(sk_OPENSSL_STRING_value(aia, 0),
-                                 &host, &port, NULL, &path, &use_ssl)) {
+        if (!OSSL_HTTP_parse_url(sk_OPENSSL_STRING_value(aia, 0), &use_ssl,
+                                 NULL, &host, &port, NULL, &path, NULL, NULL)) {
             BIO_puts(bio_err, "cert_status: can't parse AIA URL\n");
             goto err;
         }
@@ -1337,10 +1337,10 @@ int s_server_main(int argc, char *argv[])
         case OPT_STATUS_URL:
 #ifndef OPENSSL_NO_OCSP
             s_tlsextstatus = 1;
-            if (!OSSL_HTTP_parse_url(opt_arg(),
+            if (!OSSL_HTTP_parse_url(opt_arg(), &tlscstatp.use_ssl, NULL,
                                      &tlscstatp.host, &tlscstatp.port, NULL,
-                                     &tlscstatp.path, &tlscstatp.use_ssl)) {
-                BIO_printf(bio_err, "Error parsing URL\n");
+                                     &tlscstatp.path, NULL, NULL)) {
+                BIO_printf(bio_err, "Error parsing -status_url argument\n");
                 goto end;
             }
 #endif
@@ -1610,7 +1610,9 @@ int s_server_main(int argc, char *argv[])
     if (argc != 0)
         goto opthelp;
 
-    app_RAND_load();
+    if (!app_RAND_load())
+        goto end;
+
 #ifndef OPENSSL_NO_NEXTPROTONEG
     if (min_version == TLS1_3_VERSION && next_proto_neg_in != NULL) {
         BIO_printf(bio_err, "Cannot supply -nextprotoneg with TLSv1.3\n");
@@ -1690,7 +1692,7 @@ int s_server_main(int argc, char *argv[])
         if (s_cert == NULL)
             goto end;
         if (s_chain_file != NULL) {
-            if (!load_certs(s_chain_file, &s_chain, NULL,
+            if (!load_certs(s_chain_file, 0, &s_chain, NULL,
                             "server certificate chain"))
                 goto end;
         }
@@ -1754,7 +1756,7 @@ int s_server_main(int argc, char *argv[])
             goto end;
         }
         if (s_dchain_file != NULL) {
-            if (!load_certs(s_dchain_file, &s_dchain, NULL,
+            if (!load_certs(s_dchain_file, 0, &s_dchain, NULL,
                             "second server certificate chain"))
                 goto end;
         }

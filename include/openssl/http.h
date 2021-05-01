@@ -39,19 +39,17 @@ typedef BIO *(*OSSL_HTTP_bio_cb_t)(BIO *bio, void *arg, int connect, int detail)
 #define HTTP_DEFAULT_MAX_RESP_LEN (100 * 1024)
 
 OSSL_HTTP_REQ_CTX *OSSL_HTTP_REQ_CTX_new(BIO *wbio, BIO *rbio,
-                                         int method_GET, int maxline,
-                                         unsigned long max_resp_len,
-                                         int timeout,
-                                         const char *expected_content_type,
+                                         int maxline, unsigned long max_resp_len,
+                                         int timeout, const char *expected_ct,
                                          int expect_asn1);
 void OSSL_HTTP_REQ_CTX_free(OSSL_HTTP_REQ_CTX *rctx);
-int OSSL_HTTP_REQ_CTX_set_request_line(OSSL_HTTP_REQ_CTX *rctx,
+int OSSL_HTTP_REQ_CTX_set_request_line(OSSL_HTTP_REQ_CTX *rctx, int method_POST,
                                        const char *server, const char *port,
                                        const char *path);
 int OSSL_HTTP_REQ_CTX_add1_header(OSSL_HTTP_REQ_CTX *rctx,
                                   const char *name, const char *value);
-int OSSL_HTTP_REQ_CTX_i2d(OSSL_HTTP_REQ_CTX *rctx, const char *content_type,
-                          const ASN1_ITEM *it, ASN1_VALUE *req);
+int OSSL_HTTP_REQ_CTX_set1_req(OSSL_HTTP_REQ_CTX *rctx, const char *content_type,
+                               const ASN1_ITEM *it, ASN1_VALUE *req);
 int OSSL_HTTP_REQ_CTX_nbio(OSSL_HTTP_REQ_CTX *rctx);
 ASN1_VALUE *OSSL_HTTP_REQ_CTX_sendreq_d2i(OSSL_HTTP_REQ_CTX *rctx,
                                           const ASN1_ITEM *it);
@@ -64,15 +62,15 @@ BIO *OSSL_HTTP_get(const char *url, const char *proxy, const char *no_proxy,
                    OSSL_HTTP_bio_cb_t bio_update_fn, void *arg,
                    const STACK_OF(CONF_VALUE) *headers,
                    int maxline, unsigned long max_resp_len, int timeout,
-                   const char *expected_content_type, int expect_asn1);
+                   const char *expected_ct, int expect_asn1);
 ASN1_VALUE *OSSL_HTTP_get_asn1(const char *url,
                                const char *proxy, const char *no_proxy,
                                BIO *bio, BIO *rbio,
                                OSSL_HTTP_bio_cb_t bio_update_fn, void *arg,
                                const STACK_OF(CONF_VALUE) *headers,
                                int maxline, unsigned long max_resp_len,
-                               int timeout, const char *expected_content_type,
-                               const ASN1_ITEM *it);
+                               int timeout, const char *expected_ct,
+                               const ASN1_ITEM *rsp_it);
 ASN1_VALUE *OSSL_HTTP_post_asn1(const char *server, const char *port,
                                 const char *path, int use_ssl,
                                 const char *proxy, const char *no_proxy,
@@ -97,8 +95,12 @@ int OSSL_HTTP_proxy_connect(BIO *bio, const char *server, const char *port,
                             const char *proxyuser, const char *proxypass,
                             int timeout, BIO *bio_err, const char *prog);
 
-int OSSL_HTTP_parse_url(const char *url, char **phost, char **pport,
-                        int *pport_num, char **ppath, int *pssl);
+int OSSL_parse_url(const char *url, char **pscheme, char **puser, char **phost,
+                   char **pport, int *pport_num,
+                   char **ppath, char **pquery, char **pfrag);
+int OSSL_HTTP_parse_url(const char *url, int *pssl, char **puser, char **phost,
+                        char **pport, int *pport_num,
+                        char **ppath, char **pquery, char **pfrag);
 
 # ifdef  __cplusplus
 }

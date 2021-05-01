@@ -3,7 +3,8 @@
 ##
 ## {- join("\n## ", @autowarntext) -}
 {-
-     our $makedepprog = platform->makedepprog();
+     our $makedep_scheme = $config{makedep_scheme};
+     our $makedepcmd = platform->makedepcmd();
 
      sub windowsdll { $config{target} =~ /^(?:Cygwin|mingw)/ }
 
@@ -89,12 +90,13 @@ MODULES={- join(" \\\n" . ' ' x 8,
                            map { platform->dso($_) }
                            @{$unified_info{modules}})) -}
 FIPSMODULENAME={- # We do some extra checking here, as there should be only one
+                  use File::Basename;
                   my @fipsmodules =
                       grep { !$unified_info{attributes}->{modules}->{$_}->{noinst}
                              && $unified_info{attributes}->{modules}->{$_}->{fips} }
                       @{$unified_info{modules}};
                   die "More that one FIPS module" if scalar @fipsmodules > 1;
-                  join(" ", map { basename platform->dso($_) } @fipsmodules) -}
+                  join(" ", map { basename(platform->dso($_)) } @fipsmodules) -}
 
 PROGRAMS={- join(" \\\n" . ' ' x 9,
                  fill_lines(" ", $COLUMNS - 9,
@@ -162,12 +164,21 @@ INSTALL_ENGINES={-
                                && $unified_info{attributes}->{modules}->{$_}->{engine} }
                         @{$unified_info{modules}}))
 -}
+INSTALL_FIPS={-
+        join(" \\\n" . ' ' x 16,
+             fill_lines(" ", $COLUMNS - 16,
+                        map { platform->dso($_) }
+                        grep { !$unified_info{attributes}->{modules}->{$_}->{noinst}
+                               && $unified_info{attributes}->{modules}->{$_}->{fips} }
+                        @{$unified_info{modules}}))
+-}
 INSTALL_MODULES={-
         join(" \\\n" . ' ' x 16,
              fill_lines(" ", $COLUMNS - 16,
                         map { platform->dso($_) }
                         grep { !$unified_info{attributes}->{modules}->{$_}->{noinst}
-                               && !$unified_info{attributes}->{modules}->{$_}->{engine} }
+                               && !$unified_info{attributes}->{modules}->{$_}->{engine}
+                               && !$unified_info{attributes}->{modules}->{$_}->{fips} }
                         @{$unified_info{modules}}))
 -}
 INSTALL_PROGRAMS={-
@@ -287,7 +298,7 @@ HTMLDIR=$(DOCDIR)/html
 # MANSUFFIX is for the benefit of anyone who may want to have a suffix
 # appended after the manpage file section number.  "ssl" is popular,
 # resulting in files such as config.5ssl rather than config.5.
-MANSUFFIX=
+MANSUFFIX=ossl
 HTMLSUFFIX=html
 
 # For "optional" echo messages, to get "real" silence
@@ -314,7 +325,7 @@ CXXFLAGS={- join(' ', @{$config{CXXFLAGS}}) -}
 LDFLAGS= {- join(' ', @{$config{LDFLAGS}}) -}
 EX_LIBS= {- join(' ', @{$config{LDLIBS}}) -}
 
-MAKEDEPEND={- $config{makedepprog} -}
+MAKEDEPEND={- $config{makedepcmd} -}
 
 PERL={- $config{PERL} -}
 
@@ -515,9 +526,9 @@ list-tests:
 	@echo "Tests are not supported with your chosen Configure options"
 	@ : {- output_on() if !$disabled{tests}; "" -}
 
-install: install_sw install_ssldirs install_docs
+install: install_sw install_ssldirs install_docs {- $disabled{fips} ? "" : "install_fips" -}
 
-uninstall: uninstall_docs uninstall_sw
+uninstall: uninstall_docs uninstall_sw {- $disabled{fips} ? "" : "uninstall_fips" -}
 
 libclean:
 	@set -e; for s in $(SHLIB_INFO); do \
@@ -543,8 +554,14 @@ libclean:
 	$(RM) *{- platform->defext() -}
 
 clean: libclean
-	$(RM) $(HTMLDOCS1) $(HTMLDOCS3) $(HTMLDOCS5) $(HTMLDOCS7)
-	$(RM) $(MANDOCS1) $(MANDOCS3) $(MANDOCS5) $(MANDOCS7)
+	$(RM) $(HTMLDOCS1)
+	$(RM) $(HTMLDOCS3)
+	$(RM) $(HTMLDOCS5)
+	$(RM) $(HTMLDOCS7)
+	$(RM) $(MANDOCS1)
+	$(RM) $(MANDOCS3)
+	$(RM) $(MANDOCS5)
+	$(RM) $(MANDOCS7)
 	$(RM) $(PROGRAMS) $(TESTPROGS) $(MODULES) $(SCRIPTS)
 	$(RM) $(GENERATED_MANDATORY) $(GENERATED)
 	-find . -name '*{- platform->depext() -}' \! -name '.*' \! -type d -exec $(RM) {} \;
@@ -554,7 +571,6 @@ clean: libclean
 	$(RM) -r test/test-runs
 	$(RM) openssl.pc libcrypto.pc libssl.pc
 	-find . -type l \! -name '.*' -exec $(RM) {} \;
-	$(RM) $(TARFILE)
 
 distclean: clean
 	$(RM) configdata.pm
@@ -564,9 +580,7 @@ distclean: clean
 # concatenate only if that is true.
 depend:
 	@: {- output_off() if $disabled{makedepend}; "" -}
-	@$(PERL) $(SRCDIR)/util/add-depends.pl {-
-		 defined $makedepprog  && $makedepprog =~ /\/makedepend/
-                 ? 'makedepend' : 'gcc' -}
+	@$(PERL) $(SRCDIR)/util/add-depends.pl "{- $makedep_scheme -}"
 	@: {- output_on() if $disabled{makedepend}; "" -}
 
 # Install helper targets #############################################
@@ -580,17 +594,33 @@ install_docs: install_man_docs install_html_docs
 uninstall_docs: uninstall_man_docs uninstall_html_docs
 	$(RM) -r $(DESTDIR)$(DOCDIR)
 
-install_fips: install_sw
+{- output_off() if $disabled{fips}; "" -}
+install_fips: build_sw providers/fipsmodule.cnf
+	@[ -n "$(INSTALLTOP)" ] || (echo INSTALLTOP should not be empty; exit 1)
+	@$(PERL) $(SRCDIR)/util/mkdir-p.pl $(DESTDIR)$(MODULESDIR)
+	@$(ECHO) "*** Installing FIPS module"
+	@$(ECHO) "install $(INSTALL_FIPS) -> $(DESTDIR)$(MODULESDIR)/$(FIPSMODULENAME)"
+	@cp "$(INSTALL_FIPS)" $(DESTDIR)$(MODULESDIR)/$(FIPSMODULENAME).new
+	@chmod 755 $(DESTDIR)$(MODULESDIR)/$(FIPSMODULENAME).new
+	@mv -f $(DESTDIR)$(MODULESDIR)/$(FIPSMODULENAME).new \
+	       $(DESTDIR)$(MODULESDIR)/$(FIPSMODULENAME)
 	@$(ECHO) "*** Installing FIPS module configuration"
-	@$(ECHO) "fipsinstall $(DESTDIR)$(MODULESDIR)/$(FIPSMODULENAME).cnf"
-	@openssl fipsinstall -module $(DESTDIR)$(MODULESDIR)/$(FIPSMODULENAME) \
-		-out $(DESTDIR)$(MODULESDIR)/$(FIPSMODULENAME).cnf \
-		-macopt 'key:$(FIPSKEY)'
+	@$(ECHO) "install providers/fipsmodule.cnf -> $(DESTDIR)$(OPENSSLDIR)/fipsmodule.cnf"
+	@cp providers/fipsmodule.cnf $(DESTDIR)$(OPENSSLDIR)/fipsmodule.cnf
 
-uninstall_fips: uninstall_sw
+uninstall_fips:
 	@$(ECHO) "*** Uninstalling FIPS module configuration"
-	@$(ECHO) "$(RM) $(DESTDIR)$(MODULESDIR)/$(FIPSMODULENAME).cnf"
-	@$(RM) $(DESTDIR)$(MODULESDIR)/$(FIPSMODULENAME).cnf
+	$(RM) $(DESTDIR)$(OPENSSLDIR)/fipsmodule.cnf
+	@$(ECHO) "*** Uninstalling FIPS module"
+	$(RM) $(DESTDIR)$(MODULESDIR)/$(FIPSMODULENAME)
+{- if ($disabled{fips}) { output_on(); } else { output_off(); } "" -}
+install_fips:
+	@$(ECHO) "The 'install_fips' target requires the 'enable-fips' option"
+
+uninstall_fips:
+	@$(ECHO) "The 'uninstall_fips' target requires the 'enable-fips' option"
+{- output_on() if !$disabled{fips}; "" -}
+
 
 install_ssldirs:
 	@$(PERL) $(SRCDIR)/util/mkdir-p.pl $(DESTDIR)$(OPENSSLDIR)/certs
@@ -1022,10 +1052,14 @@ uninstall_html_docs:
 
 # Developer targets (note: these are only available on Unix) #########
 
-update: generate errors ordinals
+# It's important that generate_buildinfo comes after ordinals, as ordinals
+# is sensitive to build.info changes.
+update: generate errors ordinals generate_buildinfo
 
 generate: generate_apps generate_crypto_bn generate_crypto_objects \
           generate_crypto_conf generate_crypto_asn1 generate_fuzz_oids
+
+generate_buildinfo: generate_doc_buildinfo
 
 .PHONY: doc-nits cmd-nits md-nits
 doc-nits: build_generated_pods
@@ -1088,6 +1122,20 @@ generate_fuzz_oids:
 	( cd $(SRCDIR); $(PERL) fuzz/mkfuzzoids.pl \
 				crypto/objects/obj_dat.h \
 				> fuzz/oids.txt )
+
+generate_doc_buildinfo:
+	( $(PERL) -I$(BLDDIR) -Mconfigdata \
+                $(SRCDIR)/util/dofile.pl -o Makefile \
+                        $(SRCDIR)/doc/build.info.in \
+                        > $(SRCDIR)/doc/build.info.new; \
+          if ( test -e $(SRCDIR)/doc/build.info \
+               && cmp $(SRCDIR)/doc/build.info.new $(SRCDIR)/doc/build.info \
+                  > /dev/null ); \
+          then \
+                rm $(SRCDIR)/doc/build.info.new; \
+          else \
+                mv $(SRCDIR)/doc/build.info.new $(SRCDIR)/doc/build.info; \
+          fi )
 
 # Set to -force to force a rebuild
 ERROR_REBUILD=
@@ -1190,12 +1238,19 @@ tar:
 
 # Helper targets #####################################################
 
-link-utils: $(BLDDIR)/util/opensslwrap.sh $(BLDDIR)/util/wrap.pl
+link-utils: $(BLDDIR)/util/opensslwrap.sh $(BLDDIR)/util/wrap.pl \
+            $(BLDDIR)/apps/openssl.cnf
 
 $(BLDDIR)/util/opensslwrap.sh $(BLDDIR)/util/wrap.pl: configdata.pm
 	@if [ "$(SRCDIR)" != "$(BLDDIR)" ]; then \
 	    mkdir -p "$(BLDDIR)/util"; \
 	    ln -sf "../$(SRCDIR)/util/`basename "$@"`" "$(BLDDIR)/util"; \
+	fi
+
+$(BLDDIR)/apps/openssl.cnf: configdata.pm
+	@if [ "$(SRCDIR)" != "$(BLDDIR)" ]; then \
+	    mkdir -p "$(BLDDIR)/apps"; \
+	    ln -sf "../$(SRCDIR)/apps/`basename "$@"`" "$(BLDDIR)/apps"; \
 	fi
 
 FORCE:
@@ -1287,60 +1342,62 @@ reconfigure reconf:
                  } @_;
   }
 
+  sub generatetarget {
+      my %args = @_;
+      my $deps = join(" ", @{$args{deps}});
+      return <<"EOF";
+$args{target}: $deps
+EOF
+  }
+
   sub generatesrc {
       my %args = @_;
-      my $generator = join(" ", @{$args{generator}});
-      my $generator_incs = join("", map { " -I".$_ } @{$args{generator_incs}});
+      my $gen0 = $args{generator}->[0];
+      my $gen_args = join('', map { " $_" }
+                              @{$args{generator}}[1..$#{$args{generator}}]);
+      my $gen_incs = join("", map { " -I".$_ } @{$args{generator_incs}});
       my $incs = join("", map { " -I".$_ } @{$args{incs}});
       my $defs = join("", map { " -D".$_ } @{$args{defs}});
       my $deps = join(" ", @{$args{generator_deps}}, @{$args{deps}});
 
       if ($args{src} =~ /\.html$/) {
-	  my $title = basename($args{src}, ".html");
-	  my $pod = $args{generator}->[0];
-	  return <<"EOF";
+          #
+          # HTML generator
+          #
+          my $title = basename($args{src}, ".html");
+          my $pod = $gen0;
+          return <<"EOF";
 $args{src}: $pod
 	\$(PERL) \$(SRCDIR)/util/mkpod2html.pl -i "$pod" -o \$\@ -t "$title" -r "\$(SRCDIR)/doc"
 EOF
       } elsif ($args{src} =~ /\.(\d)$/) {
-	  my $section = $1;
-	  my $name = uc basename($args{src}, ".$section");
-	  my $pod = $args{generator}->[0];
-	  return <<"EOF";
+          #
+          # Man-page generator
+          #
+          my $section = $1;
+          my $name = uc basename($args{src}, ".$section");
+          my $pod = $gen0;
+          return <<"EOF";
 $args{src}: $pod
-	pod2man --name=$name --section=$section --center=OpenSSL \\
+	pod2man --name=$name --section=$section\$(MANSUFFIX) --center=OpenSSL \\
 		--release=\$(VERSION) $pod >\$\@
 EOF
       } elsif (platform->isdef($args{src})) {
+          #
+          # Linker script-ish generator
+          #
           my $target = platform->def($args{src});
           (my $mkdef_os = $target{shared_target}) =~ s|-shared$||;
           my $ord_ver = $args{intent} eq 'lib' ? ' --version $(VERSION)' : '';
           my $ord_name = $args{generator}->[1] || $args{product};
           return <<"EOF";
-$target: $args{generator}->[0] $deps \$(SRCDIR)/util/mkdef.pl
-	\$(PERL) \$(SRCDIR)/util/mkdef.pl$ord_ver --ordinals $args{generator}->[0]  --name $ord_name --OS $mkdef_os > $target
+$target: $gen0 $deps \$(SRCDIR)/util/mkdef.pl
+	\$(PERL) \$(SRCDIR)/util/mkdef.pl$ord_ver --ordinals $gen0  --name $ord_name --OS $mkdef_os > $target
 EOF
-      } elsif (!platform->isasm($args{src})) {
-          if ($args{generator}->[0] =~ m|^.*\.in$|) {
-              my $dofile = abs2rel(rel2abs(catfile($config{sourcedir},
-                                                   "util", "dofile.pl")),
-                                   rel2abs($config{builddir}));
-              my @modules = ( 'configdata.pm',
-                              grep { $_ =~ m|\.pm$| } @{$args{deps}} );
-              my %moduleincs = map { '"-I'.dirname($_).'"' => 1 } @modules;
-              @modules = map { "-M".basename($_, '.pm') } @modules;
-              my $modules = join(' ', '', sort keys %moduleincs, @modules);
-              return <<"EOF";
-$args{src}: $args{generator}->[0] $deps \$(BLDDIR)/configdata.pm
-	\$(PERL)$modules "$dofile" "-o$target{build_file}" $generator > \$@
-EOF
-	  } else {
-              return <<"EOF";
-$args{src}: $args{generator}->[0] $deps
-	\$(PERL)$generator_incs $generator > \$@
-EOF
-	  }
-      } else {
+      } elsif (platform->isasm($args{src})) {
+          #
+          # Assembler generator
+          #
           my $cppflags = {
               shlib => '$(LIB_CFLAGS) $(LIB_CPPFLAGS)',
               lib => '$(LIB_CFLAGS) $(LIB_CPPFLAGS)',
@@ -1348,27 +1405,82 @@ EOF
               bin => '$(BIN_CFLAGS) $(BIN_CPPFLAGS)'
           } -> {$args{intent}};
 
-          if ($args{generator}->[0] =~ /\.pl$/) {
-              $generator = 'CC="$(CC)" $(PERL)'.$generator_incs.' '.$generator
+          my $generator;
+          if ($gen0 =~ /\.pl$/) {
+              $generator = 'CC="$(CC)" $(PERL)'.$gen_incs.' '.$gen0.$gen_args
                   .' "$(PERLASM_SCHEME)"'.$incs.' '.$cppflags.$defs.' $(PROCESSOR)';
-          } elsif ($args{generator}->[0] =~ /\.m4$/) {
-              $generator = 'm4 -B 8192'.$generator_incs.' '.$generator.' >'
-          } elsif ($args{generator}->[0] =~ /\.S$/) {
+          } elsif ($gen0 =~ /\.m4$/) {
+              $generator = 'm4 -B 8192'.$gen_incs.' '.$gen0.$gen_args.' >'
+          } elsif ($gen0 =~ /\.S$/) {
               $generator = undef;
           } else {
-              die "Generator type for $args{src} unknown: $generator\n";
+              die "Generator type for $args{src} unknown: $gen0\n";
           }
 
           if (defined($generator)) {
               return <<"EOF";
-$args{src}: $args{generator}->[0] $deps
+$args{src}: $gen0 $deps
 	$generator \$@
 EOF
           }
           return <<"EOF";
-$args{src}: $args{generator}->[0] $deps
-	\$(CC) $incs $cppflags $defs -E $args{generator}->[0] | \\
+$args{src}: $gen0 $deps
+	\$(CC) $incs $cppflags $defs -E $gen0 | \\
 	\$(PERL) -ne '/^#(line)?\\s*[0-9]+/ or print' > \$@
+EOF
+      } elsif ($gen0 =~ m|^.*\.in$|) {
+          #
+          # "dofile" generator (file.in -> file)
+          #
+          my $dofile = abs2rel(rel2abs(catfile($config{sourcedir},
+                                               "util", "dofile.pl")),
+                               rel2abs($config{builddir}));
+          my @modules = ( 'configdata.pm',
+                          grep { $_ =~ m|\.pm$| } @{$args{deps}} );
+          my %moduleincs = map { '"-I'.dirname($_).'"' => 1 } @modules;
+          $deps = join(' ', $deps, @modules);
+          @modules = map { "-M".basename($_, '.pm') } @modules;
+          my $modules = join(' ', '', sort keys %moduleincs, @modules);
+          return <<"EOF";
+$args{src}: $gen0 $deps
+	\$(PERL)$modules "$dofile" "-o$target{build_file}" $gen0$gen_args > \$@
+EOF
+      } elsif (grep { $_ eq $gen0 } @{$unified_info{programs}}) {
+          #
+          # Generic generator using OpenSSL programs
+          #
+
+          # Redo $deps, because programs aren't expected to have deps of their
+          # own.  This is a little more tricky, though, because running programs
+          # may have dependencies on all sorts of files, so we search through
+          # our database of programs and modules to see if our dependencies
+          # are one of those.
+          $deps = join(' ', map { my $x = $_;
+                                  if (grep { $x eq $_ }
+                                          @{$unified_info{programs}}) {
+                                      platform->bin($x);
+                                  } elsif (grep { $x eq $_ }
+                                          @{$unified_info{modules}}) {
+                                      platform->dso($x);
+                                  } else {
+                                      $x;
+                                  }
+                                } @{$args{deps}});
+          # Also redo $gen0, to ensure that we have the proper extension where
+          # necessary.
+          $gen0 = platform->bin($gen0);
+          # Use $(PERL) to execute wrap.pl directly to avoid calling env
+          return <<"EOF";
+$args{src}: $gen0 $deps \$(BLDDIR)/util/wrap.pl
+	\$(PERL) \$(BLDDIR)/util/wrap.pl $gen0$gen_args > \$@
+EOF
+      } else {
+          #
+          # Generic generator using Perl
+          #
+          return <<"EOF";
+$args{src}: $gen0 $deps
+	\$(PERL)$gen_incs $gen0$gen_args > \$@
 EOF
       }
   }
@@ -1419,7 +1531,7 @@ $obj: $deps
 	$cmd $cmdflags -c -o \$\@ $srcs
 EOF
       } elsif (grep /\.S$/, @srcs) {
-          # Originally there was mutli-step rule with $(CC) -E file.S
+          # Originally there was multi-step rule with $(CC) -E file.S
           # followed by $(CC) -c file.s. It compensated for one of
           # legacy platform compiler's inability to handle .S files.
           # The platform is long discontinued by vendor so there is
@@ -1428,8 +1540,7 @@ EOF
 $obj: $deps
 	$cmd $incs $defs $cmdflags -c -o \$\@ $srcs
 EOF
-      } elsif (defined $makedepprog && $makedepprog !~ /\/makedepend/
-               && !grep /\.rc$/, @srcs) {
+      } elsif ($makedep_scheme eq 'gcc' && !grep /\.rc$/, @srcs) {
           $recipe .= <<"EOF";
 $obj: $deps
 	$cmd $incs $defs $cmdflags -MMD -MF $dep.tmp -MT \$\@ -c -o \$\@ $srcs
@@ -1445,7 +1556,7 @@ EOF
 $obj: $deps
 	$cmd $incs $defs $cmdflags $cmdcompile -o \$\@ $srcs
 EOF
-          if (defined $makedepprog  && $makedepprog =~ /\/makedepend/) {
+          if ($makedep_scheme eq 'makedepend') {
               $recipe .= <<"EOF";
 	\$(MAKEDEPEND) -f- -Y -- $incs $cmdflags -- $srcs 2>/dev/null \\
 	    > $dep
@@ -1531,7 +1642,7 @@ EOF
 
       my $recipe = '';
 
-      if (defined $simple) {
+      if (defined $simple && $simple ne $full) {
           if (sharedaix()) {
               $recipe .= <<"EOF";
 $simple: $full
@@ -1607,7 +1718,7 @@ EOF
                  @{$args{objs}};
       my @deps = compute_lib_depends(@{$args{deps}});
       my $shared_def = join("", map { ' '.$target{shared_defflag}.$_ } @defs);
-      # TODO(3.0): next line needs to become "less magic" (see PR #11950)
+      # Next line needs to become "less magic" (see PR #11950)
       $shared_def .= ' '.$target{shared_fipsflag} if (m/providers\/fips/ && defined $target{shared_fipsflag});
       my $objs = join(" \\\n\t\t", fill_lines(' ', $COLUMNS - 16, @objs));
       my $deps = join(" \\\n" . ' ' x (length($dso) + 2),

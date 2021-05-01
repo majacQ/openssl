@@ -239,8 +239,8 @@ int req_main(int argc, char **argv)
     LHASH_OF(OPENSSL_STRING) *addexts = NULL;
     X509 *new_x509 = NULL, *CAcert = NULL;
     X509_REQ *req = NULL;
-    const EVP_CIPHER *cipher = NULL;
-    const EVP_MD *md_alg = NULL, *digest = NULL;
+    EVP_CIPHER *cipher = NULL;
+    EVP_MD *digest = NULL;
     int ext_copy = EXT_COPY_UNSET;
     BIO *addext_bio = NULL;
     char *extensions = NULL;
@@ -264,7 +264,7 @@ int req_main(int argc, char **argv)
     unsigned long chtype = MBSTRING_ASC, reqflag = 0;
 
 #ifndef OPENSSL_NO_DES
-    cipher = EVP_des_ede3_cbc();
+    cipher = (EVP_CIPHER *)EVP_des_ede3_cbc();
 #endif
 
     prog = opt_init(argc, argv, req_options);
@@ -478,11 +478,12 @@ int req_main(int argc, char **argv)
     if (argc != 0)
         goto opthelp;
 
-    app_RAND_load();
+    if (!app_RAND_load())
+        goto end;
+
     if (digestname != NULL) {
-        if (!opt_md(digestname, &md_alg))
+        if (!opt_md(digestname, &digest))
             goto opthelp;
-        digest = md_alg;
     }
 
     if (!gen_x509) {
@@ -534,14 +535,13 @@ int req_main(int argc, char **argv)
     if (!add_oid_section(req_conf))
         goto end;
 
-    if (md_alg == NULL) {
+    if (digest == NULL) {
         p = NCONF_get_string(req_conf, section, "default_md");
         if (p == NULL) {
             ERR_clear_error();
         } else {
-            if (!opt_md(p, &md_alg))
+            if (!opt_md(p, &digest))
                 goto opthelp;
-            digest = md_alg;
         }
     }
 
@@ -802,7 +802,7 @@ int req_main(int argc, char **argv)
         }
 
         if (req == NULL) {
-            req = X509_REQ_new();
+            req = X509_REQ_new_ex(app_get0_libctx(), app_get0_propq());
             if (req == NULL) {
                 goto end;
             }
@@ -921,9 +921,8 @@ int req_main(int argc, char **argv)
 
     if (subj != NULL && !newreq && !gen_x509) {
         if (verbose) {
-            BIO_printf(bio_err, "Modifying subject of certificate request\n");
-            print_name(bio_err, "Old subject=",
-                       X509_REQ_get_subject_name(req), get_nameopt());
+            BIO_printf(out, "Modifying subject of certificate request\n");
+            print_name(out, "Old subject=", X509_REQ_get_subject_name(req));
         }
 
         if (!X509_REQ_set_subject_name(req, fsubj)) {
@@ -932,8 +931,7 @@ int req_main(int argc, char **argv)
         }
 
         if (verbose) {
-            print_name(bio_err, "New subject=",
-                       X509_REQ_get_subject_name(req), get_nameopt());
+            print_name(out, "New subject=", X509_REQ_get_subject_name(req));
         }
     }
 
@@ -996,12 +994,9 @@ int req_main(int argc, char **argv)
     }
 
     if (subject) {
-        if (gen_x509)
-            print_name(out, "subject=", X509_get_subject_name(new_x509),
-                       get_nameopt());
-        else
-            print_name(out, "subject=", X509_REQ_get_subject_name(req),
-                       get_nameopt());
+        print_name(out, "subject=", gen_x509
+                   ? X509_get_subject_name(new_x509)
+                   : X509_REQ_get_subject_name(req));
     }
 
     if (modulus) {
@@ -1061,6 +1056,7 @@ int req_main(int argc, char **argv)
     BIO_free(addext_bio);
     BIO_free_all(out);
     EVP_PKEY_free(pkey);
+    EVP_MD_free(digest);
     EVP_PKEY_CTX_free(genctx);
     sk_OPENSSL_STRING_free(pkeyopts);
     sk_OPENSSL_STRING_free(sigopts);
@@ -1121,7 +1117,8 @@ static int make_REQ(X509_REQ *req, EVP_PKEY *pkey, X509_NAME *fsubj,
         }
     }
 
-    if (!X509_REQ_set_version(req, 0L)) /* so far there is only version 1 */
+    /* so far there is only version 1 */
+    if (!X509_REQ_set_version(req, X509_REQ_VERSION_1))
         goto err;
 
     if (fsubj != NULL)

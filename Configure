@@ -414,9 +414,9 @@ my @disablables = (
     "dynamic-engine",
     "ec",
     "ec2m",
+    "ec_nistp_64_gcc_128",
     "ecdh",
     "ecdsa",
-    "ec_nistp_64_gcc_128",
     "egd",
     "engine",
     "err",
@@ -424,8 +424,8 @@ my @disablables = (
     "filenames",
     "fips",
     "fips-securitychecks",
-    "fuzz-libfuzzer",
     "fuzz-afl",
+    "fuzz-libfuzzer",
     "gost",
     "idea",
     "ktls",
@@ -438,11 +438,11 @@ my @disablables = (
     "msan",
     "multiblock",
     "nextprotoneg",
-    "pinshared",
     "ocb",
     "ocsp",
     "padlockeng",
     "pic",
+    "pinshared",
     "poly1305",
     "posix-io",
     "psk",
@@ -479,8 +479,8 @@ my @disablables = (
     "ui-console",
     "unit-test",
     "uplink",
-    "whirlpool",
     "weak-ssl-ciphers",
+    "whirlpool",
     "zlib",
     "zlib-dynamic",
     );
@@ -512,6 +512,7 @@ my %deprecated_disablables = (
 # All of the following are disabled by default:
 
 our %disabled = ( # "what"         => "comment"
+                  "fips"                => "default",
                   "asan"                => "default",
                   "buildtest-c++"       => "default",
                   "crypto-mdebug"       => "default",
@@ -520,8 +521,9 @@ our %disabled = ( # "what"         => "comment"
                   "ec_nistp_64_gcc_128" => "default",
                   "egd"                 => "default",
                   "external-tests"      => "default",
-                  "fuzz-libfuzzer"      => "default",
                   "fuzz-afl"            => "default",
+                  "fuzz-libfuzzer"      => "default",
+                  "ktls"                => "default",
                   "md2"                 => "default",
                   "msan"                => "default",
                   "rc5"                 => "default",
@@ -535,7 +537,6 @@ our %disabled = ( # "what"         => "comment"
                   "weak-ssl-ciphers"    => "default",
                   "zlib"                => "default",
                   "zlib-dynamic"        => "default",
-                  "ktls"                => "default",
                 );
 
 # Note: => pair form used for aesthetics, not to truly make a hash table
@@ -601,7 +602,7 @@ my @disable_cascades = (
     "hw"                => [ "padlockeng" ],
 
     # no-autoalginit is only useful when building non-shared
-    "autoalginit"       => [ "shared", "apps" ],
+    "autoalginit"       => [ "shared", "apps", "fips" ],
 
     "stdio"             => [ "apps", "capieng", "egd" ],
     "apps"              => [ "tests" ],
@@ -616,6 +617,8 @@ my @disable_cascades = (
     "legacy"            => [ "md2" ],
 
     "cmp"               => [ "crmf" ],
+
+    "fips"              => [ "fips-securitychecks" ],
 
     "deprecated-3.0"    => [ "engine", "srp" ]
     );
@@ -1531,22 +1534,32 @@ unless ($disabled{asm}) {
 
 # Check for makedepend capabilities.
 if (!$disabled{makedepend}) {
-    if ($config{target} =~ /^(VC|vms)-/) {
-        # For VC- and vms- targets, there's nothing more to do here.  The
-        # functionality is hard coded in the corresponding build files for
-        # cl (Windows) and CC/DECC (VMS).
+    # If the attribute makedep_scheme is defined, then we assume that the
+    # config target and its associated build file are programmed to deal
+    # with it.
+    # If makedep_scheme is undefined, we go looking for GCC compatible
+    # dependency making, and if that's not available, we try to fall back
+    # on 'makedepend'.
+    if ($target{makedep_scheme}) {
+        $config{makedep_scheme} = $target{makedep_scheme};
+        # If the makedepcmd attribute is defined, copy it.  If not, the
+        # build files will have to fend for themselves.
+        $config{makedepcmd} = $target{makedepcmd} if $target{makedepcmd};
     } elsif (($predefined_C{__GNUC__} // -1) >= 3
              && !($predefined_C{__APPLE_CC__} && !$predefined_C{__clang__})) {
         # We know that GNU C version 3 and up as well as all clang
         # versions support dependency generation, but Xcode did not
         # handle $cc -M before clang support (but claims __GNUC__ = 3)
-        $config{makedepprog} = "\$(CROSS_COMPILE)$config{CC}";
+        $config{makedep_scheme} = 'gcc';
     } else {
-        # In all other cases, we look for 'makedepend', and disable the
-        # capability if not found.
-        $config{makedepprog} = which('makedepend');
-        disable('unavailable', 'makedepend') unless $config{makedepprog};
+        # In all other cases, we look for 'makedepend', and set the
+        # makedep_scheme value if we found it.
+        $config{makedepcmd} = which('makedepend');
+        $config{makedep_scheme} = 'makedepend' if $config{makedepcmd};
     }
+
+    # If no depend scheme is set, we disable makedepend
+    disable('unavailable', 'makedepend') unless $config{makedep_scheme};
 }
 
 if (!$disabled{asm} && !$predefined_C{__MACH__} && $^O ne 'VMS') {
@@ -2320,7 +2333,7 @@ EOF
             $generator[0] = cleanfile($sourced, $gen, $blddir);
 
             # If the generator is itself generated, it's in the build tree
-            if ($generate{$gen}) {
+            if ($generate{$gen} || ! -f $generator[0]) {
                 $generator[0] = cleanfile($buildd, $gen, $blddir);
             }
             $check_generate{$ddest}->{$generator[0]}++;
@@ -2330,25 +2343,35 @@ EOF
 
         foreach (keys %depends) {
             my $dest = $_;
-            my $ddest = $dest eq "" ? "" : cleanfile($sourced, $_, $blddir);
+            my $ddest = $dest;
 
-            # If the destination doesn't exist in source, it can only be
-            # a generated file in the build tree.
-            if ($ddest ne "" && ($ddest eq $src_configdata || ! -f $ddest)) {
-                $ddest = cleanfile($buildd, $_, $blddir);
+            if ($dest =~ /^\|(.*)\|$/) {
+                # Collect the raw target
+                $unified_info{targets}->{$1} = 1;
+                $ddest = $1;
+            } elsif ($dest eq '') {
+                $ddest = '';
+            } else {
+                $ddest = cleanfile($sourced, $_, $blddir);
+
+                # If the destination doesn't exist in source, it can only be
+                # a generated file in the build tree.
+                if ($ddest eq $src_configdata || ! -f $ddest) {
+                    $ddest = cleanfile($buildd, $_, $blddir);
+                }
             }
             foreach (@{$depends{$dest}}) {
                 my $d = cleanfile($sourced, $_, $blddir);
+                my $d2 = cleanfile($buildd, $_, $blddir);
 
                 # If we know it's generated, or assume it is because we can't
                 # find it in the source tree, we set file we depend on to be
                 # in the build tree rather than the source tree.
                 if ($d eq $src_configdata
-                    || (grep { $d eq $_ }
-                        map { cleanfile($srcdir, $_, $blddir) }
-                        grep { /\.h$/ } keys %{$unified_info{generate}})
+                    || (grep { $d2 eq $_ }
+                        keys %{$unified_info{generate}})
                     || ! -f $d) {
-                    $d = cleanfile($buildd, $_, $blddir);
+                    $d = $d2;
                 }
                 $unified_info{depends}->{$ddest}->{$d} = 1;
 
@@ -2628,7 +2651,7 @@ EOF
 
     ### Make unified_info a bit more efficient
     # One level structures
-    foreach (("programs", "libraries", "modules", "scripts")) {
+    foreach (("programs", "libraries", "modules", "scripts", "targets")) {
         $unified_info{$_} = [ sort keys %{$unified_info{$_}} ];
     }
     # Two level structures

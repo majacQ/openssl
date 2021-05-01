@@ -33,7 +33,8 @@ static const OSSL_PARAM known_sha1_settable_ctx_params[] = {
     {OSSL_DIGEST_PARAM_SSL3_MS, OSSL_PARAM_OCTET_STRING, NULL, 0, 0},
     OSSL_PARAM_END
 };
-static const OSSL_PARAM *sha1_settable_ctx_params(ossl_unused void *provctx)
+static const OSSL_PARAM *sha1_settable_ctx_params(ossl_unused void *ctx,
+                                                  ossl_unused void *provctx)
 {
     return known_sha1_settable_ctx_params;
 }
@@ -44,13 +45,16 @@ static int sha1_set_ctx_params(void *vctx, const OSSL_PARAM params[])
     const OSSL_PARAM *p;
     SHA_CTX *ctx = (SHA_CTX *)vctx;
 
-    if (ctx != NULL && params != NULL) {
-        p = OSSL_PARAM_locate_const(params, OSSL_DIGEST_PARAM_SSL3_MS);
-        if (p != NULL && p->data_type == OSSL_PARAM_OCTET_STRING)
-            return ossl_sha1_ctrl(ctx, EVP_CTRL_SSL3_MASTER_SECRET,
-                                  p->data_size, p->data);
-    }
-    return 0;
+    if (ctx == NULL)
+        return 0;
+    if (params == NULL)
+        return 1;
+
+    p = OSSL_PARAM_locate_const(params, OSSL_DIGEST_PARAM_SSL3_MS);
+    if (p != NULL && p->data_type == OSSL_PARAM_OCTET_STRING)
+        return ossl_sha1_ctrl(ctx, EVP_CTRL_SSL3_MASTER_SECRET,
+                              p->data_size, p->data);
+    return 1;
 }
 
 /* ossl_sha1_functions */

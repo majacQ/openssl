@@ -158,6 +158,8 @@ extern "C" {
 #define OSSL_MAC_PARAM_XOF            "xof"            /* int, 0 or 1 */
 #define OSSL_MAC_PARAM_DIGEST_NOINIT  "digest-noinit"  /* int, 0 or 1 */
 #define OSSL_MAC_PARAM_DIGEST_ONESHOT "digest-oneshot" /* int, 0 or 1 */
+#define OSSL_MAC_PARAM_C_ROUNDS       "c-rounds"       /* unsigned int */
+#define OSSL_MAC_PARAM_D_ROUNDS       "d-rounds"       /* unsigned int */
 
 /*
  * If "engine" or "properties" are specified, they should always be paired
@@ -205,7 +207,6 @@ extern "C" {
 #define OSSL_KDF_PARAM_SSHKDF_SESSION_ID "session_id" /* octet string */
 #define OSSL_KDF_PARAM_SSHKDF_TYPE  "type"      /* int */
 #define OSSL_KDF_PARAM_SIZE         "size"      /* size_t */
-#define OSSL_KDF_PARAM_CIPHER       OSSL_ALG_PARAM_CIPHER     /* utf8 string */
 #define OSSL_KDF_PARAM_CONSTANT     "constant"  /* octet string */
 #define OSSL_KDF_PARAM_PKCS12_ID    "id"        /* int */
 #define OSSL_KDF_PARAM_KBKDF_USE_L  "use-l"             /* int */
@@ -382,7 +383,6 @@ extern "C" {
 /* RSA padding modes */
 #define OSSL_PKEY_RSA_PAD_MODE_NONE    "none"
 #define OSSL_PKEY_RSA_PAD_MODE_PKCSV15 "pkcs1"
-#define OSSL_PKEY_RSA_PAD_MODE_SSLV23  "sslv23"
 #define OSSL_PKEY_RSA_PAD_MODE_OAEP    "oaep"
 #define OSSL_PKEY_RSA_PAD_MODE_X931    "x931"
 #define OSSL_PKEY_RSA_PAD_MODE_PSS     "pss"
@@ -432,20 +432,8 @@ extern "C" {
 #define OSSL_EXCHANGE_PARAM_KDF_DIGEST            "kdf-digest" /* utf8_string */
 #define OSSL_EXCHANGE_PARAM_KDF_DIGEST_PROPS      "kdf-digest-props" /* utf8_string */
 #define OSSL_EXCHANGE_PARAM_KDF_OUTLEN            "kdf-outlen" /* size_t */
-
-/*
- * TODO(3.0): improve this pattern
- *
- * Currently the sole internal user of OSSL_EXCHANGE_PARAM_KDF_UKM is
- * EVP_PKEY_CTX_{set0,get0}_ecdh_kdf_ukm():
- *      OSSL_EXCHANGE_PARAM_KDF_UKM is handled as a octet_string on set0,
- *      and as an octet_ptr on get0.
- *
- * This pattern is borrowed from the handling of
- * OSSL_ASYM_CIPHER_PARAM_OAEP_LABEL in
- * EVP_PKEY_CTX_{set0,get0}_rsa_oaep_label().
- */
-#define OSSL_EXCHANGE_PARAM_KDF_UKM               "kdf-ukm" /* see note above */
+/* The following parameter is an octet_string on set and an octet_ptr on get */
+#define OSSL_EXCHANGE_PARAM_KDF_UKM               "kdf-ukm"
 
 /* Signature parameters */
 #define OSSL_SIGNATURE_PARAM_ALGORITHM_ID       "algorithm-id"
@@ -469,6 +457,7 @@ extern "C" {
     OSSL_PKEY_PARAM_MGF1_PROPERTIES
 #define OSSL_ASYM_CIPHER_PARAM_OAEP_DIGEST              OSSL_ALG_PARAM_DIGEST
 #define OSSL_ASYM_CIPHER_PARAM_OAEP_DIGEST_PROPS        "digest-props"
+/* The following parameter is an octet_string on set and an octet_ptr on get */
 #define OSSL_ASYM_CIPHER_PARAM_OAEP_LABEL               "oaep-label"
 #define OSSL_ASYM_CIPHER_PARAM_TLS_CLIENT_VERSION       "tls-client-version"
 #define OSSL_ASYM_CIPHER_PARAM_TLS_NEGOTIATED_VERSION   "tls-negotiated-version"
@@ -483,6 +472,7 @@ extern "C" {
 #define OSSL_ENCODER_PARAM_OUTPUT_STRUCTURE "output-structure"
 /* Currently PVK only, but reusable for others as needed */
 #define OSSL_ENCODER_PARAM_ENCRYPT_LEVEL    "encrypt-level"
+#define OSSL_ENCODER_PARAM_SAVE_PARAMETERS  "save-parameters" /* integer */
 
 #define OSSL_DECODER_PARAM_PROPERTIES       OSSL_ALG_PARAM_PROPERTIES
 #define OSSL_DECODER_PARAM_INPUT_TYPE       "input-type"
